@@ -53,6 +53,9 @@ impl Edit {
                 let count = deck.buttons.len();
                 deck.buttons.retain(|button| button.id != id);
                 ensure!(deck.buttons.len() < count, "buton bulunamadı");
+                if let Some(layout) = &mut deck.layout {
+                    layout.placements.remove(&id);
+                }
             }
         }
         let serialized = serde_json::to_vec(&deck)?;

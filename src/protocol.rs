@@ -10,6 +10,8 @@ pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
 pub(crate) struct Deck {
     pub revision: u64,
     pub buttons: Vec<Button>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<crate::layout::Layout>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -54,6 +56,7 @@ pub(crate) enum Request {
         token: String,
     },
     Snapshot,
+    Metrics,
     ObsStatus,
     Save {
         deck: Deck,
@@ -78,14 +81,19 @@ pub(crate) enum Request {
 impl Deck {
     pub(crate) fn validate(&self) -> bool {
         let mut ids = std::collections::HashSet::new();
-        self.buttons.iter().all(|button| {
+        let valid = self.buttons.iter().all(|button| {
             let label = button.label.trim();
             !label.is_empty()
                 && label.chars().count() <= 60
                 && !label.chars().any(char::is_control)
                 && !button.id.is_nil()
                 && ids.insert(button.id)
-        })
+        });
+        valid
+            && self
+                .layout
+                .as_ref()
+                .is_none_or(|layout| layout.validate(&ids))
     }
 }
 
@@ -114,6 +122,7 @@ mod tests {
         let deck = Deck {
             revision: 0,
             buttons: vec![button.clone(), button],
+            layout: None,
         };
         assert!(!deck.validate());
     }

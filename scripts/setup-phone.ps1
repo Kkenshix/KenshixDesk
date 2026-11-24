@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$Apk,
     [Parameter(Mandatory)][string]$ApkSigner,
     [Parameter(Mandatory)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$SignerSha256,
-    [ValidatePattern('^[A-Za-z0-9-]+$')][string]$Serial
+    [ValidatePattern('^[A-Za-z0-9-]+$')][string]$Serial,
+    [switch]$TestOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +50,9 @@ if ($model -notmatch '^SM-M225[A-Z0-9]*$' -or $sdk -notmatch '^\d+$' -or [int]$s
     throw "Beklenen Galaxy M22 ve uyumlu Android sürümü bulunamadı ($model, Android $release)."
 }
 Write-Host "Galaxy M22 ($model), Android $release, SDK $sdk"
-$installation = Invoke-Phone install -r $apkFile
+$installFlags = @('-r')
+if ($TestOnly) { $installFlags += '-t' }
+$installation = Invoke-Phone install @installFlags $apkFile
 if ($installation -notcontains 'Success') { throw 'Android kurulum başarısını bildirmedi.' }
 $reverse = Invoke-Phone reverse --list
 if ($reverse -notmatch '\btcp:43851 tcp:43851\b') {

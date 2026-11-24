@@ -39,11 +39,11 @@ import java.util.UUID
 
 class MainActivity : Activity() {
     private val background = Color.BLACK
-    private val surface = Color.rgb(20, 23, 29)
-    private val line = Color.rgb(48, 53, 64)
+    private val surface = Color.rgb(16, 19, 25)
+    private val line = Color.rgb(36, 43, 54)
     private val text = Color.rgb(243, 245, 250)
-    private val muted = Color.rgb(170, 177, 193)
-    private val accent = Color.rgb(170, 199, 255)
+    private val muted = Color.rgb(155, 167, 183)
+    private val accent = Color.rgb(136, 223, 193)
     private val handler = Handler(Looper.getMainLooper())
 
     private val actions = linkedMapOf(
@@ -59,6 +59,7 @@ class MainActivity : Activity() {
     )
 
     private lateinit var link: DeckLink
+    private val kiosk by lazy { Kiosk(this) }
     private lateinit var root: LinearLayout
     private lateinit var statusView: TextView
     private lateinit var clockView: TextView
@@ -67,9 +68,11 @@ class MainActivity : Activity() {
     private var batteryText = ""
     private var status = "Eşleştirme gerekli"
     private var deck = JSONObject().put("revision", 0).put("buttons", JSONArray())
+    private var currentPanel: String? = null
     private var editing = false
     private var mixer = false
     private var obs = false
+    private var performance = false
     private var dimmed = false
     private var idleSeconds = 30
     private var activeBrightness = -1f
@@ -100,6 +103,7 @@ class MainActivity : Activity() {
         idleBrightness = preferences.getFloat("idle_brightness", 0.08f)
         idleSeconds = preferences.getInt("idle_seconds", 30).coerceIn(5, 300)
         deck = runCatching { JSONObject(preferences.getString("cached_deck", "").orEmpty()) }.getOrDefault(deck)
+        currentPanel = layout().item(preferences.getString("current_panel", null))?.id
         status = if (preferences.contains("identity")) "Bağlantı bekleniyor" else "Eşleştirme gerekli"
         body = FrameLayout(this)
         render()
@@ -110,12 +114,13 @@ class MainActivity : Activity() {
                 status = connection
                 if (snapshot != null) applyDeck(snapshot)
                 if (changed && !connected()) {
+                    performance = false
                     mixer = false
                     obs = false
                     editing = false
                 }
                 statusView.text = status
-                if (changed || (snapshot != null && !mixer && !obs)) renderBody()
+                if (changed || (snapshot != null && !mixer && !obs && !performance)) renderBody()
             }
         }, { message -> handler.post { if (!isDestroyed) notify(message) } })
         battery = object : BroadcastReceiver() {
@@ -135,6 +140,12 @@ class MainActivity : Activity() {
         }
         handler.post(clock)
         wake()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) runCatching { kiosk.onFocus() }
+            .onFailure { notify("Kiosk ekranı başlatılamadı.") }
     }
 
     override fun onStart() {
@@ -165,13 +176,14 @@ class MainActivity : Activity() {
 
     @Deprecated("Android Activity back routing")
     override fun onBackPressed() {
-        if (mixer || obs || editing) {
+        if (mixer || obs || performance || editing) {
             mixer = false
             obs = false
+            performance = false
             editing = false
             renderBody()
         } else {
-            super.onBackPressed()
+            if (!kiosk.fullScreen()) super.onBackPressed()
         }
     }
 
@@ -204,8 +216,8 @@ class MainActivity : Activity() {
         root = column().apply { setBackgroundColor(this@MainActivity.background) }
         val top = row().apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(4), dp(10), dp(4))
-            minimumHeight = dp(64)
+            setPadding(dp(18), dp(6), dp(14), dp(6))
+            minimumHeight = dp(68)
         }
         val image = ImageView(this).apply {
             setImageResource(R.drawable.dragon)
@@ -213,14 +225,19 @@ class MainActivity : Activity() {
         }
         top.addView(image, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) })
         val brand = column().apply {
-            addView(label("KenshixDeck", 15, text, true))
-            statusView = label(status, 12, accent)
+            addView(label("KenshixDeck", 17, text, true))
+            statusView = label(status, 11, accent)
             addView(statusView)
         }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         clockView = label("", 12, muted).apply { gravity = Gravity.END }
         top.addView(clockView, LinearLayout.LayoutParams(-2, -2))
-        val menu = button("⋮") { openMenu(it) }.apply { contentDescription = "Ayarlar" }
+        val menu = button("⋮") { openMenu(it) }.apply {
+            contentDescription = "Ayarlar"
+            background = android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x3388DFC1), tile(surface), null
+            )
+        }
         top.addView(menu, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) })
         root.addView(top)
         root.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(-1, dp(1)))
@@ -235,11 +252,16 @@ class MainActivity : Activity() {
     }
 
     private fun connected() = status == "USB" || status == "Wi-Fi"
+    private fun layout() = PanelLayout(deck.optJSONObject("layout"))
 
     private fun renderBody() {
 
 
         body.removeAllViews()
+        if (performance && connected()) {
+            body.addView(PerformanceView(this, link) { performance = false; renderBody() }, FrameLayout.LayoutParams(-1, -1))
+            return
+        }
         if (obs && connected()) {
             body.addView(ObsView(this, link) { obs = false; renderBody() }, FrameLayout.LayoutParams(-1, -1))
             return
@@ -249,33 +271,70 @@ class MainActivity : Activity() {
             return
         }
         val scroll = ScrollView(this).apply { isFillViewport = true }
-        val content = column().apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        val content = column().apply { setPadding(dp(18), dp(18), dp(10), dp(18)) }
         val create = button("+") {
             if (connected()) editButton(null)
             else if (status == "Eşleştirme gerekli") showPairing()
             else notify("Buton eklemek için PC bağlantısı gerekli.")
-        }.apply { contentDescription = "Yeni buton" }
+        }.apply {
+            contentDescription = "Yeni buton"
+            textSize = 28f
+            setTextColor(accent)
+            background = tile(Color.rgb(10, 17, 17), true)
+        }
 
         if (connected()) {
-            val buttons = deck.optJSONArray("buttons") ?: JSONArray()
+            val layout = layout()
+            val selection = layout.item(currentPanel)
+            if (selection != null) {
+                val path = row().apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, dp(8), dp(10))
+                    addView(button("‹") { selectPanel(selection.parent) }.apply {
+                        contentDescription = "Üst panele dön"
+                    }, LinearLayout.LayoutParams(dp(40), dp(44)))
+                    addView(label(selection.name, 17, text, true).apply {
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        setPadding(dp(10), 0, dp(6), 0)
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(button("Paneller") { choosePanel() })
+                }
+                content.addView(path)
+            }
             val columns = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 5 else 3
-            var gridRow: LinearLayout? = null
-            for (i in 0..buttons.length()) {
-                if (i % columns == 0) {
+            var gridRow = row()
+            var used = columns
+            fun place(tile: View, span: Int) {
+                if (used + span > columns) {
                     gridRow = row().apply { weightSum = columns.toFloat() }
                     content.addView(gridRow)
+                    used = 0
                 }
-                val tile = if (i == buttons.length()) create else {
-                    val record = buttons.getJSONObject(i)
-                    button(record.getString("label")) {
-                        if (editing) editButton(record) else execute(it, record)
-                    }
-                }
-                gridRow?.addView(tile, LinearLayout.LayoutParams(0, dp(84), 1f).apply {
-                    marginEnd = dp(6)
+                gridRow.addView(tile, LinearLayout.LayoutParams(0, dp(94), span.toFloat()).apply {
+                    marginEnd = dp(8)
                     bottomMargin = dp(8)
                 })
+                used += span
             }
+
+            layout.items().filter { it.parent == currentPanel && it.kind != "profile" }.forEach { node ->
+                place(panelTile(node.name, if (node.kind == "page") "Sayfa" else "Klasör", null) {
+                    selectPanel(node.id)
+                }, 1)
+            }
+            val buttons = deck.optJSONArray("buttons") ?: JSONArray()
+            for (index in 0 until buttons.length()) {
+                val record = buttons.getJSONObject(index)
+                val id = record.getString("id")
+                if (layout.panelFor(id) != currentPanel) continue
+                val tile = panelTile(record.getString("label"), actions[record.getString("action")].orEmpty(),
+                    layout.colorFor(id)) {
+                    if (editing) editButton(record) else execute(it, record)
+                }
+                place(tile, layout.spanFor(id))
+            }
+            place(create, 1)
         } else {
             content.addView(create, LinearLayout.LayoutParams(dp(68), dp(68)))
             if (status == "Bağlantı bekleniyor") {
@@ -294,12 +353,28 @@ class MainActivity : Activity() {
                 editing = !editing
                 mixer = false
                 obs = false
+                performance = false
                 renderBody()
                 true
+            }
+            if (connected()) {
+                menu.add("Profiller ve paneller").setOnMenuItemClickListener { choosePanel(); true }
+                menu.add("Panel düzeni").setOnMenuItemClickListener { managePanel(); true }
+                menu.add("PC Performansı").setOnMenuItemClickListener {
+                    mixer = false
+                    obs = false
+                    performance = true
+                    renderBody()
+                    true
+                }
             }
             menu.add("PC ile eşleştir").setOnMenuItemClickListener { showPairing(); true }
             if (preferences.contains("identity")) menu.add("Telefon anahtarını kaldır").setOnMenuItemClickListener {
                 link.forget()
+                true
+            }
+            menu.add(if (kiosk.fullScreen()) "Bakım moduna geç" else "Kiosk").setOnMenuItemClickListener {
+                showKiosk()
                 true
             }
             menu.add("Ekran").setOnMenuItemClickListener { showScreenSettings(); true }
@@ -311,6 +386,120 @@ class MainActivity : Activity() {
                 true
             }
         }.show()
+    }
+
+    private fun selectPanel(id: String?) {
+        currentPanel = layout().item(id)?.id
+        preferences.edit().putString("current_panel", currentPanel).apply()
+        mixer = false
+        obs = false
+        performance = false
+        renderBody()
+    }
+
+    private fun choosePanel() {
+        val panels = layout().items()
+        val captions = listOf("Ana panel") + panels.map { panel ->
+            val prefix = when (panel.kind) { "profile" -> "Profil"; "page" -> "Sayfa"; else -> "Klasör" }
+            val parent = panels.firstOrNull { it.id == panel.parent }?.name
+            if (parent == null) "$prefix · ${panel.name}" else "$prefix · $parent / ${panel.name}"
+        }
+        AlertDialog.Builder(this).setTitle("Profiller ve paneller")
+            .setItems(captions.toTypedArray()) { _, index -> selectPanel(panels.getOrNull(index - 1)?.id) }
+            .setNeutralButton("Düzenle") { _, _ -> managePanel() }.setNegativeButton("Kapat", null).show()
+    }
+
+    private fun managePanel() {
+        if (saving) return
+        val model = layout()
+        val revision = deck.getLong("revision")
+        val item = model.item(currentPanel)
+        val entries = mutableListOf<Pair<String, () -> Unit>>()
+        entries += "Yeni profil" to {
+            panelName("Yeni profil", null) { label ->
+                val id = model.add(label, null, "profile")
+                savePanel(revision, model) { selectPanel(id) }
+            }
+        }
+        if (item != null) {
+            if (item.kind == "profile") entries += "Sayfa ekle" to {
+                panelName("Yeni sayfa", null) { label ->
+                    val id = model.add(label, item.id, "page")
+                    savePanel(revision, model) { selectPanel(id) }
+                }
+            }
+            entries += "Klasör ekle" to {
+                panelName("Yeni klasör", null) { label ->
+                    val id = model.add(label, item.id, "folder")
+                    savePanel(revision, model) { selectPanel(id) }
+                }
+            }
+            entries += "Adını değiştir" to {
+                panelName("Panel adı", item.name) { label ->
+                    model.rename(item.id, label)
+                    savePanel(revision, model)
+                }
+            }
+            if (model.empty(item.id)) entries += "Boş paneli sil" to {
+                AlertDialog.Builder(this).setTitle("Boş paneli sil").setMessage(item.name)
+                    .setNegativeButton("Vazgeç", null).setPositiveButton("Sil") { _, _ ->
+                        model.remove(item.id)
+                        savePanel(revision, model) { selectPanel(item.parent) }
+                    }.show()
+            }
+        }
+        AlertDialog.Builder(this).setTitle(item?.name ?: "Panel düzeni")
+            .setItems(entries.map { it.first }.toTypedArray()) { _, index -> entries[index].second.invoke() }
+            .setNegativeButton("Kapat", null).show()
+    }
+
+    private fun panelName(title: String, old: String?, change: (String) -> Unit) {
+        val field = EditText(this).apply {
+            hint = "Ad"
+            isSingleLine = true
+            filters = arrayOf(InputFilter.LengthFilter(60))
+            setText(old)
+        }
+        val wrapper = column().apply { setPadding(dp(24), dp(8), dp(24), dp(8)); addView(field) }
+        val dialog = AlertDialog.Builder(this).setTitle(title).setView(wrapper)
+            .setNegativeButton("Vazgeç", null).setPositiveButton("Kaydet", null).show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val value = field.text.toString().trim()
+            if (value.isEmpty()) { field.error = "Ad gerekli"; return@setOnClickListener }
+            dialog.dismiss()
+            change(value)
+        }
+    }
+
+    private fun savePanel(expected: Long, model: PanelLayout, after: () -> Unit = {}) {
+        val next = JSONObject(deck.toString()).put("layout", model.snapshot())
+        sendDeck(expected, next, after)
+    }
+
+    private fun showKiosk() {
+        val dialog = AlertDialog.Builder(this).setNegativeButton("Vazgeç", null)
+        when {
+            kiosk.fullScreen() -> dialog.setTitle("Bakım moduna geç")
+                .setMessage("Android ana ekranına ve ayarlarına tekrar erişilebilecek.")
+                .setPositiveButton("Kiosk çıkışı") { _, _ ->
+                    runCatching { kiosk.disable() }
+                        .onSuccess { notify("Bakım modu açık.") }
+                        .onFailure { notify("Kiosk tamamen kapatılamadı.") }
+                }
+            kiosk.isOwner() -> dialog.setTitle("Kiosk modunu aç")
+                .setMessage("KenshixDeck ana ekran olarak açılır. Çıkmak için Ayarlar menüsünden bakım moduna geç.")
+                .setPositiveButton("Kiosku aç") { _, _ ->
+                    runCatching {
+                        kiosk.enable { active -> notify(if (active) "Kiosk etkin." else "Android kiosk kilidini başlatamadı.") }
+                    }
+                        .onFailure { notify("Android kiosk kilidini başlatamadı.") }
+                }
+                .setNeutralButton("Android ayarları") { _, _ -> startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
+            else -> dialog.setTitle("Kiosk")
+                .setMessage("Tam kiosk için Android cihaz yönetimi kurulumu gerekli. Tam ekran arayüzü burada deneyebilirsin.")
+                .setPositiveButton("Tam ekranı dene") { _, _ -> kiosk.preview(true) }
+        }
+        dialog.show()
     }
 
     private fun showScreenSettings() {
@@ -370,6 +559,9 @@ class MainActivity : Activity() {
     private fun editButton(current: JSONObject?) {
         if (saving) return
         val originalRevision = deck.getLong("revision")
+        val model = layout()
+        val id = current?.getString("id") ?: UUID.randomUUID().toString()
+        val panelId = currentPanel
         val panel = column().apply { setPadding(dp(24), dp(12), dp(24), dp(8)) }
         val title = EditText(this).apply {
             hint = "Buton adı"
@@ -383,22 +575,36 @@ class MainActivity : Activity() {
         }
         panel.addView(title)
         panel.addView(action)
+        val span = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("Standart genişlik", "Çift genişlik"))
+            setSelection(model.spanFor(id) - 1)
+        }
+        val tints = linkedMapOf("Varsayılan renk" to null, "Petrol" to "#143731",
+            "Gece mavisi" to "#182B49", "Mürdüm" to "#3B2649", "Kiremit" to "#442C28")
+        val tint = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                tints.keys.toList())
+            setSelection(tints.values.indexOf(model.colorFor(id)).coerceAtLeast(0))
+        }
+        panel.addView(span)
+        panel.addView(tint)
         val dialog = AlertDialog.Builder(this)
             .setTitle(if (current == null) "Yeni buton" else "Butonu düzenle")
             .setView(panel).setNegativeButton("Vazgeç", null).setPositiveButton("Kaydet", null)
         if (current != null) dialog.setNeutralButton("Sil") { _, _ ->
             AlertDialog.Builder(this).setMessage("Buton silinsin mi?")
                 .setNegativeButton("Vazgeç", null)
-                .setPositiveButton("Sil") { _, _ -> saveEdit(originalRevision, current.getString("id"), null) }.show()
+                .setPositiveButton("Sil") { _, _ -> saveEdit(originalRevision, id, null, model) }.show()
         }
         dialog.show().also { displayed ->
             displayed.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val input = title.text.toString().trim()
                 if (input.isEmpty()) { title.error = "Buton adı gerekli"; return@setOnClickListener }
-                val id = current?.getString("id") ?: UUID.randomUUID().toString()
                 val replacement = JSONObject().put("id", id).put("label", input)
                     .put("action", actions.keys.elementAt(action.selectedItemPosition))
-                saveEdit(originalRevision, id, replacement)
+                model.place(id, panelId, span.selectedItemPosition + 1, tints.values.elementAt(tint.selectedItemPosition))
+                saveEdit(originalRevision, id, replacement, model)
                 displayed.dismiss()
             }
         }
@@ -406,10 +612,11 @@ class MainActivity : Activity() {
 
     private fun applyDeck(snapshot: JSONObject) {
         deck = snapshot
-        preferences.edit().putString("cached_deck", snapshot.toString()).apply()
+        if (layout().item(currentPanel) == null) currentPanel = null
+        preferences.edit().putString("cached_deck", snapshot.toString()).putString("current_panel", currentPanel).apply()
     }
 
-    private fun saveEdit(expected: Long, id: String, replacement: JSONObject?) {
+    private fun saveEdit(expected: Long, id: String, replacement: JSONObject?, model: PanelLayout) {
         if (saving) return
         if (deck.getLong("revision") != expected) {
             notify("Panel değişti. Butonu yeniden aç.")
@@ -426,7 +633,17 @@ class MainActivity : Activity() {
             } else next.put(button)
         }
         if (!found && replacement != null) next.put(replacement)
-        val payload = JSONObject().put("revision", expected).put("buttons", next)
+        if (replacement == null) model.unplace(id)
+        val payload = JSONObject().put("revision", expected).put("buttons", next).put("layout", model.snapshot())
+        sendDeck(expected, payload)
+    }
+
+    private fun sendDeck(expected: Long, payload: JSONObject, after: () -> Unit = {}) {
+        if (saving) return
+        if (deck.getLong("revision") != expected) {
+            notify("Panel değişti. Yeniden dene.")
+            return
+        }
         saving = true
         link.request(message("save").put("deck", payload)) { result ->
             handler.post {
@@ -437,6 +654,7 @@ class MainActivity : Activity() {
                         applyDeck(result.getJSONObject("deck"))
                         renderBody()
                         if (result.optString("type") == "conflict") notify("Panel başka bir bağlantıdan değişti. Yeniden dene.")
+                        else after()
                     }
                     else -> notify("Değişikliğin kaydedildiği doğrulanamadı.")
                 }
@@ -485,10 +703,34 @@ class MainActivity : Activity() {
         if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
 
-    private fun tile(color: Int) = GradientDrawable().apply {
+    private fun panelTile(title: String, action: String, tint: String?, tapped: (View) -> Unit) =
+        column().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(12), dp(9), dp(10), dp(9))
+            background = RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x3388DFC1), tile(tint?.let(Color::parseColor) ?: surface), null
+            )
+            addView(label(title, 16, text, true).apply {
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            if (action.isNotEmpty() && action != title) {
+                addView(label(action, 11, muted).apply {
+                    setPadding(0, dp(4), 0, 0)
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
+            setOnClickListener(tapped)
+        }
+
+    private fun tile(color: Int, add: Boolean = false) = GradientDrawable().apply {
         setColor(color)
-        cornerRadius = dp(12).toFloat()
-        setStroke(dp(1), line)
+        cornerRadius = dp(16).toFloat()
+        if (add) setStroke(dp(1), Color.rgb(52, 90, 79), dp(4).toFloat(), dp(3).toFloat())
+        else setStroke(dp(1), line)
     }
 
     private fun button(value: String, tapped: (View) -> Unit) = Button(this).apply {

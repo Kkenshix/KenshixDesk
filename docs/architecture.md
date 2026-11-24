@@ -16,8 +16,14 @@ Android tarafında Views ve OkHttp kullanılır. Eşleştirmeden önce kullanıc
 
 Uç nokta WSS /v1 ve JSON mesaj sınırı 64 KiB. İlk mesaj `pair` veya `hello` ile protokol sürümü ve kod ya da token içerir. `snapshot` paneli okur, `save` tam paneli ve revizyonunu taşır, `execute` kayıtlı buton UUID'si ve işlem UUID'si taşır. `mixer` ses durumunu döndürür. `set_volume` ve `set_mute` bir ses hedefi ve işlem UUID'si içerir. `obs_status` kaydı, yayını, Replay Buffer'ı ve aktif sahneyi okur. Sonuç ve hata mesajları ayırt edilir.
 
+## Panel düzeni ve ölçümler
+
+İsteğe bağlı layout nesnesi profil, sayfa, klasör ve buton yerleşimini aynı SQLite revizyonunda saklar. Sürüm 0.1 istemcisinden gelen layout alanı bulunmayan değişiklikler var olan panel düzenini korur. Silinen butonların yerleşimleri kaldırılır. Döngü, kayıp panel referansı ve geçersiz renk veya genişlik host tarafından reddedilir.
+
+Android performans görünümü açıkken metrics isteği gönderir. Rust, CPU kullanımını iki GetSystemTimes örneğinin farkından hesaplar. RAM ve sistem diski Windows API'lerinden okunur.
+
 ## Test
 
 Yerel Windows smoke testi için Python ve websockets 15.0.1 gerekir. `scripts/smoke-host.py` geçici bir test veritabanı kullanır. Ses seviyesini değiştirmeden gerçek Core Audio listesini okur. Android lint ve JVM testleri Gradle wrapper üzerinden çalışır.
 
-Cihaza kurulum, Wi-Fi geçiş süresi, OBS gerçek komutları ve donanım performansı fiziksel test gerektirir. Grafiksel Windows editörü, profiller ve klasörler, kapsamlı makro ve otomasyon, donanım sensörleri, Device Owner kiosk ve cihazlara otomatik imzalı güncelleme bu geliştirme derlemesinin açık iş kalemleridir. OBS sahne ve kaynak düzenleme, mikser cihaz değiştirme ve uygulama ikonları da açık kalemlerdir.
+Cihaza kurulum, Wi-Fi geçiş süresi, OBS gerçek komutları ve donanım performansı fiziksel test gerektirir. Grafiksel Windows editörü, ileri düzey sürükle-bırak ve medya özelleştirme, kapsamlı makro ve otomasyon, GPU ve sıcaklık sensörleri ile cihazlara otomatik imzalı güncelleme açık iş kalemleridir. Device Owner kiosk yalnızca uygun cihazda fiziksel olarak doğrulanabilir. OBS sahne ve kaynak düzenleme, mikser cihaz değiştirme ve uygulama ikonları da açık kalemlerdir.

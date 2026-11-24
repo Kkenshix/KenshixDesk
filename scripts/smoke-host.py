@@ -85,6 +85,26 @@ async def run(binary):
                 saved = await exchange(socket, type="save", deck=deck)
                 assert saved.get("deck") == {"revision": 1, "buttons": [button]}, saved
                 assert (await exchange(socket, type="save", deck=deck)).get("type") == "conflict"
+                profile, page, folder = (str(uuid.uuid4()) for _ in range(3))
+                layout = {
+                    "panels": [
+                        {"id": profile, "name": "Ev", "parent": None, "kind": "profile"},
+                        {"id": page, "name": "İş", "parent": profile, "kind": "page"},
+                        {"id": folder, "name": "Ses", "parent": page, "kind": "folder"},
+                    ],
+                    "placements": {button["id"]: {"panel": folder, "span": 2, "color": "#143731"}},
+                }
+                updated = await exchange(socket, type="save", deck={
+                    "revision": 1, "buttons": [button], "layout": layout})
+                assert updated.get("deck", {}).get("layout") == layout, updated
+                await exchange(socket, type="metrics")
+                await asyncio.sleep(0.2)
+                metrics = (await exchange(socket, type="metrics"))["measurements"]
+                assert 0 <= metrics["cpu_percent"] <= 100
+                for resource in ("memory", "system_disk"):
+                    reading = metrics[resource]
+                    assert reading and 0 <= reading["used"] <= reading["total"]
+                print("Nested panel layout and real Windows CPU/RAM/disk readings passed.")
                 missing = await exchange(socket, type="execute", operation=str(uuid.uuid4()), button=str(uuid.uuid4()))
                 assert missing.get("status") == "failed", missing
                 result = await exchange(socket, type="mixer")

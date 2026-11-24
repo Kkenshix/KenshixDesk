@@ -3,6 +3,10 @@ mod audio;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
+mod layout;
+#[cfg(windows)]
+mod metrics;
+#[cfg(windows)]
 mod obs;
 #[cfg(windows)]
 mod protocol;

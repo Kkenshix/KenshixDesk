@@ -1,8 +1,12 @@
 package com.kenshix.deck
 
 import android.app.Activity
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -17,6 +21,9 @@ internal class MixerView(
     exit: () -> Unit,
     private val notice: (String) -> Unit,
 ) : LinearLayout(activity) {
+    private val accent = Color.rgb(136, 223, 193)
+    private val ink = Color.rgb(235, 241, 246)
+    private val secondary = Color.rgb(155, 167, 183)
     private val handler = Handler(Looper.getMainLooper())
     private val status = TextView(activity)
     private val rows = LinearLayout(activity)
@@ -25,13 +32,15 @@ internal class MixerView(
     private var reading = false
 
     private inner class Level(val id: String, label: String) {
-        private val value = TextView(activity)
+        private val value = TextView(activity).apply { setTextColor(accent); textSize = 16f }
         private var muted = false
         private var dragging = false
         private var sending = false
         private var pending: Int? = null
         private val slider = SeekBar(activity).apply {
             max = 100
+            progressTintList = ColorStateList.valueOf(accent)
+            thumbTintList = ColorStateList.valueOf(accent)
             contentDescription = label
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
@@ -51,6 +60,8 @@ internal class MixerView(
         }
         private val mute = Button(activity).apply {
             isAllCaps = false
+            setTextColor(ink)
+            background = card(Color.rgb(27, 34, 42), 9)
             setOnClickListener {
                 if (!sending) send(message("set_mute").put("muted", !muted))
             }
@@ -59,16 +70,21 @@ internal class MixerView(
         init {
             rows.addView(LinearLayout(activity).apply {
                 orientation = VERTICAL
-                setPadding(dp(12), dp(8), dp(12), dp(10))
-                addView(TextView(activity).apply {
-                    text = label
-                    textSize = 16f
-                    setTypeface(null, android.graphics.Typeface.BOLD)
+                background = card(Color.rgb(16, 19, 25), 16)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                addView(LinearLayout(activity).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(activity).apply {
+                        text = label
+                        textSize = 16f
+                        setTextColor(ink)
+                        setTypeface(null, android.graphics.Typeface.BOLD)
+                    }, LayoutParams(0, -2, 1f))
+                    addView(value)
                 })
-                addView(value)
                 addView(slider)
-                addView(mute)
-            })
+                addView(mute, LayoutParams(-2, dp(44)).apply { gravity = Gravity.END })
+            }, LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
         }
 
         fun render(record: JSONObject) {
@@ -130,10 +146,12 @@ internal class MixerView(
             addView(TextView(activity).apply {
                 text = "Ses Mikseri"
                 textSize = 22f
+                setTextColor(ink)
                 setPadding(dp(12), 0, 0, 0)
             })
         })
         status.text = "Ses aygıtı okunuyor"
+        status.setTextColor(secondary)
         addView(status)
         rows.orientation = VERTICAL
         addView(ScrollView(activity).apply { addView(rows) }, LayoutParams(-1, 0, 1f))
@@ -175,6 +193,12 @@ internal class MixerView(
                 items.forEach { levels[it.getString("id")]?.render(it) }
             }
         }
+    }
+
+    private fun card(fill: Int, radius: Int) = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(radius).toFloat()
+        setStroke(dp(1), Color.rgb(36, 43, 54))
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()

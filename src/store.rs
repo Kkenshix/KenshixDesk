@@ -42,17 +42,30 @@ pub(crate) fn deck(db: &Connection) -> Result<Deck> {
 }
 
 pub(crate) fn save(db: &mut Connection, mut next: Deck) -> Result<Option<Deck>> {
-    ensure!(next.validate(), "geçersiz buton bilgisi");
     let transaction = db.transaction()?;
     let old = deck(&transaction)?;
     if old.revision != next.revision {
         return Ok(None);
     }
+    if next.layout.is_none()
+        && let Some(mut layout) = old.layout
+    {
+        let ids: std::collections::HashSet<_> =
+            next.buttons.iter().map(|button| button.id).collect();
+        layout.placements.retain(|id, _| ids.contains(id));
+        next.layout = Some(layout);
+    }
+    ensure!(next.validate(), "geçersiz panel bilgisi");
     next.revision = old
         .revision
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("sürüm sınırı"))?;
-    put(&transaction, "deck", &serde_json::to_vec(&next)?)?;
+    let serialized = serde_json::to_vec(&next)?;
+    ensure!(
+        serialized.len() <= crate::protocol::MAX_MESSAGE - 256,
+        "panel bağlantı sınırını aşıyor"
+    );
+    put(&transaction, "deck", &serialized)?;
     transaction.commit()?;
     Ok(Some(next))
 }
@@ -101,6 +114,28 @@ mod tests {
         );
         assert!(save(&mut db, Deck::default())?.is_none());
         assert_eq!(deck(&db)?.revision, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_save_keeps_panel_metadata_and_prunes_removed_buttons() -> Result<()> {
+        let mut db = open(std::path::Path::new(":memory:"))?;
+        let id = Uuid::new_v4();
+        let profile = Uuid::new_v4();
+        let original: Deck = serde_json::from_value(serde_json::json!({
+            "revision": 0, "buttons": [{"id":id,"label":"Ses","action":"mixer"}],
+            "layout":{"panels":[{"id":profile,"name":"Ev","parent":null,"kind":"profile"}],
+                "placements":{id.to_string():{"panel":profile,"span":2,"color":"#123456"}}}
+        }))?;
+        save(&mut db, original)?;
+        let legacy = Deck {
+            revision: 1,
+            ..Deck::default()
+        };
+        let saved = save(&mut db, legacy)?.expect("revisions agree");
+        let layout = saved.layout.expect("layout retained");
+        assert_eq!(layout.panels.len(), 1);
+        assert!(layout.placements.is_empty());
         Ok(())
     }
 

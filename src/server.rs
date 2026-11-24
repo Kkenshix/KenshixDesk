@@ -429,6 +429,7 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
         }
         Request::ObsStatus => crate::obs::status(db)
             .unwrap_or_else(|_| json!({"type":"error","code":"obs_unavailable"})),
+        Request::Metrics => json!({"type":"metrics","measurements":crate::metrics::read()}),
         Request::Mixer => json!({"type":"mixer","levels":crate::audio::mixer()?}),
         Request::SetVolume {
             operation: id,
