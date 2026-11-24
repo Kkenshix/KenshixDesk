@@ -2,12 +2,9 @@ package com.kenshix.deck
 
 import android.app.Activity
 import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -21,9 +18,9 @@ internal class MixerView(
     exit: () -> Unit,
     private val notice: (String) -> Unit,
 ) : LinearLayout(activity) {
-    private val accent = Color.rgb(136, 223, 193)
-    private val ink = Color.rgb(235, 241, 246)
-    private val secondary = Color.rgb(155, 167, 183)
+    private val accent = DeckUi.accent
+    private val ink = DeckUi.text
+    private val secondary = DeckUi.muted
     private val handler = Handler(Looper.getMainLooper())
     private val status = TextView(activity)
     private val rows = LinearLayout(activity)
@@ -58,19 +55,14 @@ internal class MixerView(
                 }
             })
         }
-        private val mute = Button(activity).apply {
-            isAllCaps = false
-            setTextColor(ink)
-            background = card(Color.rgb(27, 34, 42), 9)
-            setOnClickListener {
-                if (!sending) send(message("set_mute").put("muted", !muted))
-            }
+        private val mute = DeckUi.action(activity, "Sessize al") {
+            if (!sending) send(message("set_mute").put("muted", !muted))
         }
 
         init {
             rows.addView(LinearLayout(activity).apply {
                 orientation = VERTICAL
-                background = card(Color.rgb(16, 19, 25), 16)
+                background = DeckUi.shape(activity, radius = 20)
                 setPadding(dp(14), dp(10), dp(14), dp(10))
                 addView(LinearLayout(activity).apply {
                     gravity = Gravity.CENTER_VERTICAL
@@ -89,8 +81,9 @@ internal class MixerView(
 
         fun render(record: JSONObject) {
             if (busy()) return
-            slider.progress = record.getInt("percent")
-            value.text = if (record.optBoolean("mixed")) "Oturum seviyeleri farklı" else slider.progress.toString() + "%"
+            val percent = record.getInt("percent")
+            if (slider.progress != percent) slider.setProgress(percent, android.animation.ValueAnimator.areAnimatorsEnabled())
+            value.text = if (record.optBoolean("mixed")) "Oturum seviyeleri farklı" else "$percent%"
             muted = record.getBoolean("muted")
             mute.text = if (muted) "Sesi aç" else "Sessize al"
         }
@@ -135,22 +128,10 @@ internal class MixerView(
 
     init {
         orientation = VERTICAL
-        setPadding(dp(16), dp(8), dp(16), dp(8))
-        addView(LinearLayout(activity).apply {
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            addView(Button(activity).apply {
-                text = "‹"
-                contentDescription = "Geri"
-                setOnClickListener { exit() }
-            }, LayoutParams(dp(56), dp(48)))
-            addView(TextView(activity).apply {
-                text = "Ses Mikseri"
-                textSize = 22f
-                setTextColor(ink)
-                setPadding(dp(12), 0, 0, 0)
-            })
-        })
+        setPadding(dp(18), dp(12), dp(18), dp(8))
+        addView(DeckUi.screenHeading(activity, "Ses Mikseri", exit))
         status.text = "Ses aygıtı okunuyor"
+        status.setPadding(dp(12), dp(9), dp(12), dp(9))
         status.setTextColor(secondary)
         addView(status)
         rows.orientation = VERTICAL
@@ -179,26 +160,22 @@ internal class MixerView(
                 reading = false
                 val records = response?.optJSONArray("levels")
                 if (records == null) {
+                    status.visibility = android.view.View.VISIBLE
                     status.text = "Ses aygıtı okunamadı"
                     return@post
                 }
                 if (levels.values.any { it.busy() }) return@post
-                status.text = ""
+                status.visibility = android.view.View.GONE
                 val items = (0 until records.length()).map(records::getJSONObject)
                 if (levels.keys.toList() != items.map { it.getString("id") }) {
                     levels.clear()
                     rows.removeAllViews()
                     items.forEach { levels[it.getString("id")] = Level(it.getString("id"), it.getString("label")) }
+                    DeckUi.appear(rows, 4)
                 }
                 items.forEach { levels[it.getString("id")]?.render(it) }
             }
         }
-    }
-
-    private fun card(fill: Int, radius: Int) = GradientDrawable().apply {
-        setColor(fill)
-        cornerRadius = dp(radius).toFloat()
-        setStroke(dp(1), Color.rgb(36, 43, 54))
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()

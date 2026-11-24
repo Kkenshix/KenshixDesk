@@ -1,10 +1,31 @@
 <resources>
     <string name="app_name">KenshixDeck</string>
-    <style name="DeckTheme" parent="android:style/Theme.Material.NoActionBar">
+
+    <style name="DeckThemeBase" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">#000000</item>
-        <item name="android:colorAccent">#AAC7FF</item>
+        <item name="android:colorBackground">#000000</item>
+        <item name="android:colorAccent">#BCADFF</item>
+        <item name="android:textColorPrimary">#F7F5FC</item>
+        <item name="android:textColorSecondary">#A6A0B4</item>
         <item name="android:navigationBarColor">#000000</item>
         <item name="android:statusBarColor">#000000</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <style name="DeckTheme" parent="DeckThemeBase" />
+
+    <style name="DeckDialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#BCADFF</item>
+        <item name="android:colorBackground">#0C0C0F</item>
+        <item name="android:textColorPrimary">#F7F5FC</item>
+        <item name="android:textColorSecondary">#A6A0B4</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@style/DeckDialogMotion</item>
+    </style>
+
+    <style name="DeckDialogMotion">
+        <item name="android:windowEnterAnimation">@anim/deck_dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/deck_dialog_exit</item>
     </style>
 </resources>
