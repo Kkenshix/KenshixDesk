@@ -1,6 +1,6 @@
 # Panel, makro ve güncelleme
 
-M22 sabit ters yatay yönde açılır. Ana panel ve profiller arasında ekranın iç kısmından yatay kaydır. Bir profilin sayfaları arasında da aynı hareket çalışır. Ayarlar → Profiller ve paneller menüsünden bir panele doğrudan gidebilir, profil, sayfa ve klasör oluşturabilirsin.
+M22 sabit ters yatay yönde açılır. Ana panel ve profiller arasında ekranın iç kısmından yatay kaydır. Bir profilin sayfaları arasında da aynı hareket çalışır. M22 kurulumunda `configure-kiosk.ps1 -SamsungGestures` seçeneği, Samsung'un işaretsiz hareket modunu seçer ve soldaki gezinme düğmesi şeridini kaldırır. Ayarlar → Profiller ve paneller menüsünden bir panele doğrudan gidebilir, profil, sayfa ve klasör oluşturabilirsin.
 
 Windows tepsisinden **Paneli düzenle** seçeneğini aç. Soldaki alan telefonun yerleşimini gösterir. Butonun ortasından başka butona sürükleyerek sırayı, sağ kenarından çekerek bir veya iki hücrelik genişliği değiştir. Sağ ayarlardan ad, eylem, panel, renk ve GIF/PNG/JPEG seçilebilir. Görsel en fazla 512 KB ve 800 × 800 olabilir. **Uygula** ile düzenleme kaydedilir. Yerleşim sürüklemeleri bırakınca kaydedilir. Telefon başka bir değişiklik kaydetmişse düzenleyici güncel sürümü yükler. **M22 ekranını göster · USB** seçeneği, KenshixDeck telefonda öndeyken M22'nin gerçek görüntüsünü aynı pencereye getirir.
 

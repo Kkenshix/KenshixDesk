@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Adb,
-    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9-]+$')][string]$Serial
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9-]+$')][string]$Serial,
+    [switch]$SamsungGestures
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,17 @@ if ($owner -notmatch 'com\.kenshix\.deck/.*DeckAdminReceiver') {
         throw 'Android cihaz yöneticisini doğrulamadı.'
     }
     $provisioned
+}
+
+if ($SamsungGestures) {
+    $overlay = 'com.samsung.internal.systemui.navbar.gestural_no_hint'
+    $state = (Invoke-Phone shell cmd overlay dump $overlay) -join "`n"
+    if ($state -notmatch 'mCategory\.*: com.android.internal.navigation_bar_mode') {
+        throw 'Bu Samsung yazılımında işaretsiz gezinme modu doğrulanamadı.'
+    }
+    Invoke-Phone shell cmd overlay enable-exclusive --user 0 --category $overlay
+    $enabled = @(Invoke-Phone shell cmd overlay list --user 0 | Select-String ('^\[x\] ' + [regex]::Escape($overlay) + '$'))
+    if ($enabled.Count -ne 1) { throw 'Samsung hareket modu etkinleştirilemedi.' }
 }
 
 Invoke-Phone shell am start -n com.kenshix.deck/.MainActivity

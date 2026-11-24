@@ -188,6 +188,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Android Activity back routing")
     override fun onBackPressed() {
+        if (kiosk.locked()) return
         if (mixer || obs || performance || editing) {
             mixer = false
             obs = false
