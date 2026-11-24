@@ -5,6 +5,8 @@ import android.content.res.ColorStateList
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
+import kotlin.math.roundToInt
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -34,35 +36,80 @@ internal class MixerView(
         private var dragging = false
         private var sending = false
         private var pending: Int? = null
-        private val slider = SeekBar(activity).apply {
+        private val slider = object : SeekBar(activity) {
+            private var pointer = MotionEvent.INVALID_POINTER_ID
+
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        if (!isEnabled) return false
+                        parent.requestDisallowInterceptTouchEvent(true)
+                        pointer = event.getPointerId(0)
+                        dragging = true
+                        isPressed = true
+                        setTouchPosition(event.x)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val index = event.findPointerIndex(pointer)
+                        if (index >= 0) setTouchPosition(event.getX(index))
+                    }
+                    MotionEvent.ACTION_POINTER_UP -> {
+                        if (event.getPointerId(event.actionIndex) == pointer) {
+                            setTouchPosition(event.getX(event.actionIndex))
+                            endTouch()
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (pointer != MotionEvent.INVALID_POINTER_ID) {
+                            setTouchPosition(event.x)
+                            performClick()
+                            endTouch()
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL -> endTouch()
+                }
+                return true
+            }
+
+            private fun setTouchPosition(x: Float) {
+                val track = (width - paddingLeft - paddingRight).coerceAtLeast(1)
+                val fraction = ((x - paddingLeft) / track).coerceIn(0f, 1f)
+                val percent = (fraction * 100).roundToInt()
+                if (progress != percent || value.text.isEmpty()) {
+                    progress = percent
+                    change(percent)
+                }
+            }
+
+            private fun endTouch() {
+                pointer = MotionEvent.INVALID_POINTER_ID
+                isPressed = false
+                dragging = false
+                parent.requestDisallowInterceptTouchEvent(false)
+                flush()
+            }
+
+            override fun performClick(): Boolean = super.performClick()
+        }.apply {
             max = 100
             progressTintList = ColorStateList.valueOf(accent)
             thumbTintList = ColorStateList.valueOf(accent)
             contentDescription = label
-            setOnTouchListener { view, event ->
-                when (event.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> view.parent.requestDisallowInterceptTouchEvent(true)
-                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
-                        view.parent.requestDisallowInterceptTouchEvent(false)
-                }
-                false
-            }
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
+                override fun onStartTrackingTouch(bar: SeekBar) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar) = Unit
                 override fun onProgressChanged(bar: SeekBar, percent: Int, fromUser: Boolean) {
-                    if (fromUser) {
-                        value.text = percent.toString() + "%"
-                        pending = percent
-                        flush()
-                    }
-                }
-                override fun onStopTrackingTouch(bar: SeekBar) {
-                    dragging = false
-                    pending = bar.progress
-                    flush()
+                    if (fromUser) change(percent)
                 }
             })
         }
+
+        private fun change(percent: Int) {
+            value.text = "$percent%"
+            pending = percent
+            flush()
+        }
+
         private val mute = DeckUi.action(activity, "Sessize al") {
             if (!sending) send(message("set_mute").put("muted", !muted))
         }
@@ -90,7 +137,7 @@ internal class MixerView(
         fun render(record: JSONObject) {
             if (busy()) return
             val percent = record.getInt("percent")
-            if (slider.progress != percent) slider.setProgress(percent, android.animation.ValueAnimator.areAnimatorsEnabled())
+            if (slider.progress != percent) slider.progress = percent
             value.text = if (record.optBoolean("mixed")) "Oturum seviyeleri farklı" else "$percent%"
             muted = record.getBoolean("muted")
             mute.text = if (muted) "Sesi aç" else "Sessize al"
