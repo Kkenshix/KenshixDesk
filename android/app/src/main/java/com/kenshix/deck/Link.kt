@@ -99,9 +99,10 @@ internal class DeckLink(
     private var failures = 0
     private var nextUsbProbe = 0L
     private var deckRevision = -1L
+    private var lastAlert: String? = null
 
     init {
-        worker.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { lost() } }, 0, 1200, TimeUnit.MILLISECONDS)
+        worker.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { lost() } }, 0, 430, TimeUnit.MILLISECONDS)
     }
 
     fun live() = connection != null && !paused
@@ -248,6 +249,9 @@ internal class DeckLink(
 
     private fun snapshot(current: Connection, response: JSONObject) {
         val deck = response.getJSONObject("deck")
+        val alert = response.optString("alert").takeUnless { it.isBlank() || it == "null" }
+        if (alert != null && lastAlert != null && alert != lastAlert) report(alert)
+        lastAlert = alert ?: ""
         val revision = deck.getLong("revision")
         if (revision != deckRevision) {
             deckRevision = revision

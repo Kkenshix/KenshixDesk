@@ -47,6 +47,8 @@ impl Edit {
                     id: Uuid::new_v4(),
                     label,
                     action,
+                    routine: None,
+                    art: None,
                 });
             }
             Self::Remove(id) => {

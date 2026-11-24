@@ -101,7 +101,8 @@ internal class Kiosk(private val activity: Activity) {
     private fun updateBars() {
         val controller = activity.window.insetsController ?: return
         if (fullScreen()) {
-            controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.systemBarsBehavior = if (locked()) WindowInsetsController.BEHAVIOR_DEFAULT
+                else WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsets.Type.systemBars())
         } else {
             controller.show(WindowInsets.Type.systemBars())

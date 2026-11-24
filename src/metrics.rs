@@ -16,6 +16,7 @@ use windows::{
 #[derive(Serialize)]
 pub(crate) struct Metrics {
     cpu_percent: Option<u8>,
+    gpu_percent: Option<u8>,
     memory: Option<Usage>,
     system_disk: Option<Usage>,
 }
@@ -37,6 +38,7 @@ static PREVIOUS_CPU: Mutex<Option<Cpu>> = Mutex::new(None);
 pub(crate) fn read() -> Metrics {
     Metrics {
         cpu_percent: cpu(),
+        gpu_percent: crate::gpu::percent(),
         memory: memory(),
         system_disk: system_disk(),
     }
@@ -73,6 +75,11 @@ fn memory() -> Option<Usage> {
         used: status.ullTotalPhys.saturating_sub(status.ullAvailPhys),
         total: status.ullTotalPhys,
     })
+}
+
+pub(crate) fn disk_percent() -> Option<u8> {
+    let disk = system_disk()?;
+    u8::try_from(disk.used.checked_mul(100)?.checked_div(disk.total)?).ok()
 }
 
 fn system_disk() -> Option<Usage> {

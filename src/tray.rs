@@ -29,16 +29,22 @@ pub(crate) fn run(
     create_code: impl Fn() -> Result<String> + Send + Sync + 'static,
     revoke: impl Fn() -> Result<()> + Send + Sync + 'static,
     status: String,
+    directory: std::path::PathBuf,
+    editor_adb: Option<(String, String)>,
     ready: mpsc::SyncSender<()>,
 ) -> Result<()> {
     let menu = Menu::new();
     let pair = MenuItem::with_id("pair", "Eşleştirme kodunu kopyala", true, None);
+    let editor = MenuItem::with_id("editor", "Paneli düzenle", true, None);
+    let update = MenuItem::with_id("update", "Güncellemeleri kontrol et", true, None);
     let version = MenuItem::with_id("status", "Bağlantı ve sürüm", true, None);
     let revoke_item = MenuItem::with_id("revoke", "Telefon erişimini iptal et", true, None);
     let quit = MenuItem::with_id("quit", "Çıkış", true, None);
     menu.append_items(&[
         &pair,
+        &editor,
         &version,
+        &update,
         &revoke_item,
         &PredefinedMenuItem::separator(),
         &quit,
@@ -55,6 +61,7 @@ pub(crate) fn run(
         .with_icon(icon)
         .build()?;
 
+    let editor_process = std::sync::Mutex::new(None::<std::process::Child>);
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         match event.id.0.as_str() {
             "pair" => match create_code()
@@ -65,7 +72,38 @@ pub(crate) fn run(
                 ),
                 Err(_) => tell("Eşleştirme kodu kopyalanamadı."),
             },
-            "status" => tell(&status),
+            "status" => tell(&format!(
+                "{status}\n{}",
+                crate::updater::current(&directory)
+            )),
+            "update" => {
+                crate::updater::request_check();
+                tell(&crate::updater::current(&directory));
+            }
+            "editor" => {
+                let mut editor_process = editor_process.lock().expect("editor lock");
+                if editor_process
+                    .as_mut()
+                    .is_some_and(|process| matches!(process.try_wait(), Ok(None)))
+                {
+                    return;
+                }
+                *editor_process = std::env::current_exe()
+                    .and_then(|exe| {
+                        let mut command = std::process::Command::new(exe);
+                        command.arg("--editor");
+                        if let Some((adb, serial)) = &editor_adb {
+                            command.args(["--adb", adb, serial]);
+                        }
+                        use std::os::windows::process::CommandExt as _;
+                        command.creation_flags(0x08000000).spawn()
+                    })
+                    .ok();
+                if editor_process.is_none() {
+                    tell("Panel editörü açılamadı.");
+                }
+            }
+
             "revoke" => match revoke() {
                 Ok(()) => tell("Telefon erişimi iptal edildi."),
                 Err(_) => tell("Telefon erişimi iptal edilemedi."),

@@ -42,7 +42,7 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
 
     private val actions = linkedMapOf(
-        "mixer" to "Ses Mikseri", "play_pause" to "Oynat / duraklat",
+        "macro" to "Tuş, tıklama veya makro", "mixer" to "Ses Mikseri", "play_pause" to "Oynat / duraklat",
         "next_track" to "Sonraki parça", "previous_track" to "Önceki parça",
         "task_view" to "Görev görünümü", "task_manager" to "Görev Yöneticisi",
         "obs_status" to "OBS durumu", "obs_start_record" to "OBS kaydı başlat",
@@ -54,6 +54,7 @@ class MainActivity : Activity() {
     )
 
     private lateinit var link: DeckLink
+    private val buttonArt by lazy { ButtonArt(link) }
     private val kiosk by lazy { Kiosk(this) }
     private lateinit var root: LinearLayout
     private lateinit var statusView: TextView
@@ -69,6 +70,10 @@ class MainActivity : Activity() {
     private var obs = false
     private var performance = false
     private var dimmed = false
+    private var standby = false
+    private lateinit var header: View
+    private var downX = 0f
+    private var downY = 0f
     private var idleSeconds = 30
     private var activeBrightness = -1f
     private var idleBrightness = 0.08f
@@ -77,11 +82,20 @@ class MainActivity : Activity() {
     private var saving = false
     private var lastDestination: String? = null
     private var noticeView: TextView? = null
+    private var activeRoutine: String? = null
+    private val animatedTiles = mutableListOf<ImageView>()
     private val preferences by lazy { getSharedPreferences("deck", MODE_PRIVATE) }
     private val dim = Runnable {
         if (!inactive) {
             dimmed = true
             brightness(idleBrightness)
+            updateAnimations()
+        }
+    }
+    private val showStandby = Runnable {
+        if (!inactive && ::link.isInitialized) {
+            standby = true
+            renderBody()
         }
     }
     private val clock = object : Runnable {
@@ -156,6 +170,7 @@ class MainActivity : Activity() {
         inactive = true
         link.pause(true)
         handler.removeCallbacks(dim)
+        handler.removeCallbacks(showStandby)
         super.onStop()
     }
 
@@ -186,7 +201,9 @@ class MainActivity : Activity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            eatingGesture = dimmed
+            downX = event.x
+            downY = event.y
+            eatingGesture = dimmed || standby
             wake()
         }
         if (eatingGesture) {
@@ -195,14 +212,47 @@ class MainActivity : Activity() {
             }
             return true
         }
+        if (event.actionMasked == MotionEvent.ACTION_UP && connected() && !mixer && !obs &&
+            !performance && !editing && downY >= header.bottom) {
+            val horizontal = event.x - downX
+            if (kotlin.math.abs(horizontal) > dp(88) && kotlin.math.abs(event.y - downY) < dp(52)) {
+                val panels = layout().items()
+                val item = panels.firstOrNull { it.id == currentPanel }
+                val peers = when (item?.kind) {
+                    "page" -> panels.filter { it.kind == "page" && it.parent == item.parent }.map { it.id }
+                    "folder" -> panels.filter { it.kind == "folder" && it.parent == item.parent }.map { it.id }
+                    else -> listOf(null) + panels.filter { it.kind == "profile" }.map { it.id }
+                }
+                val index = peers.indexOf(currentPanel) + if (horizontal < 0) 1 else -1
+                if (index in peers.indices) {
+                    val cancel = MotionEvent.obtain(event)
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    super.dispatchTouchEvent(cancel)
+                    cancel.recycle()
+                    selectPanel(peers[index])
+                    return true
+                }
+            }
+        }
         return super.dispatchTouchEvent(event)
     }
 
     private fun wake() {
+        if (standby) {
+            standby = false
+            renderBody()
+        }
         dimmed = false
+        updateAnimations()
         brightness(activeBrightness)
         handler.removeCallbacks(dim)
         handler.postDelayed(dim, idleSeconds * 1000L)
+        handler.removeCallbacks(showStandby)
+        handler.postDelayed(showStandby, 300_000L)
+    }
+
+    private fun updateAnimations() {
+        animatedTiles.forEach { buttonArt.update(it) { !dimmed && !inactive } }
     }
 
     private fun brightness(level: Float) {
@@ -237,6 +287,7 @@ class MainActivity : Activity() {
             DeckUi.touch(this, surface, 16)
         }
         top.addView(menu, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) })
+        header = top
         root.addView(top)
         root.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(-1, dp(1)))
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -255,7 +306,9 @@ class MainActivity : Activity() {
     private fun renderBody() {
 
 
+        animatedTiles.clear()
         val destination = when {
+            standby -> "standby"
             performance && connected() -> "performance"
             obs && connected() -> "obs"
             mixer && connected() -> "mixer"
@@ -267,6 +320,11 @@ class MainActivity : Activity() {
             body.removeAllViews()
             body.addView(view, FrameLayout.LayoutParams(-1, -1))
             if (animate) DeckUi.appear(view)
+        }
+        header.visibility = if (standby) View.GONE else View.VISIBLE
+        if (standby) {
+            if (body.getChildAt(0) !is StandbyView) display(StandbyView(this, link))
+            return
         }
         if (performance && connected()) {
             display(PerformanceView(this, link) { performance = false; renderBody() })
@@ -282,6 +340,12 @@ class MainActivity : Activity() {
         }
         val scroll = ScrollView(this).apply { isFillViewport = true }
         val content = column().apply { setPadding(dp(18), dp(18), dp(10), dp(18)) }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            updateAnimations()
+        }
+        scroll.viewTreeObserver.addOnGlobalLayoutListener {
+            updateAnimations()
+        }
         val create = button("+") {
             if (connected()) editButton(null)
             else if (status == "Eşleştirme gerekli") showPairing()
@@ -342,6 +406,18 @@ class MainActivity : Activity() {
                     layout.colorFor(id)) {
                     if (editing) editButton(record) else execute(it, record)
                 }
+                record.optString("art").takeIf { it.isNotEmpty() }?.let { image ->
+                    val picture = ImageView(this).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        clipToOutline = true
+                        background = DeckUi.shape(context, surface, 8)
+                    }
+                    tile.removeViewAt(0)
+                    tile.addView(picture, 0, LinearLayout.LayoutParams(-1, 0, 1f).apply { bottomMargin = dp(5) })
+                    animatedTiles.add(picture)
+                    buttonArt.show(picture, image) { !dimmed && !inactive }
+                }
                 place(tile, layout.spanFor(id))
             }
             place(create, 1)
@@ -398,10 +474,23 @@ class MainActivity : Activity() {
 
     private fun showVersion() {
         val version = packageManager.getPackageInfo(packageName, 0)
-        DeckUi.dialog(this).setTitle("KenshixDeck")
-            .setMessage("Sürüm ${version.versionName} / ${version.longVersionCode}\n${BuildConfig.GIT_SHA}")
-            .setPositiveButton("Kapat", null).showDeck()
+        fun show(state: JSONObject?) {
+            val checked = state?.optLong("checked_unix")?.takeIf { it > 0 }
+                ?.let { DateFormat.getDateTimeInstance().format(Date(it * 1000)) } ?: "—"
+            val host = state?.optString("version")?.takeIf { it.isNotEmpty() }?.let {
+                "Windows $it / ${state.optInt("build")}\n${state.optString("commit")}"
+            } ?: "Windows bağlantısı bekleniyor"
+            DeckUi.dialog(this).setTitle("KenshixDeck")
+                .setMessage("Android ${version.versionName} / ${version.longVersionCode}\n${BuildConfig.GIT_SHA}\n\n$host\n\n${state?.optString("message").orEmpty()}\nSon kontrol $checked")
+                .setPositiveButton("Kapat", null).showDeck()
+        }
+        if (::link.isInitialized && connected()) {
+            link.request(message("update_status")) { result ->
+                handler.post { if (!isDestroyed) show(result?.optJSONObject("state")) }
+            }
+        } else show(null)
     }
+
     private fun selectPanel(id: String?) {
         currentPanel = layout().item(id)?.id
         preferences.edit().putString("current_panel", currentPanel).apply()
@@ -594,6 +683,13 @@ class MainActivity : Activity() {
             actions.keys.indexOf(current?.optString("action")).coerceAtLeast(0))
         panel.addView(title)
         panel.addView(action)
+        val routine = RoutineEditor(this, current?.optJSONObject("routine"), actions)
+        panel.addView(routine)
+        fun updateRoutine(index: Int) {
+            routine.visibility = if (actions.keys.elementAt(index) == "macro") View.VISIBLE else View.GONE
+        }
+        updateRoutine(action.selectedItemPosition)
+        action.onSelection = ::updateRoutine
         val span = DeckUi.choose(this, "Genişlik", listOf("Standart genişlik", "Çift genişlik"), model.spanFor(id) - 1)
         val tints = linkedMapOf("Varsayılan renk" to null, "Petrol" to "#143731",
             "Gece mavisi" to "#182B49", "Mürdüm" to "#3B2649", "Kiremit" to "#442C28")
@@ -601,6 +697,11 @@ class MainActivity : Activity() {
             tints.values.indexOf(model.colorFor(id)).coerceAtLeast(0))
         panel.addView(span)
         panel.addView(tint)
+        val clone = if (current != null) android.widget.CheckBox(this).apply {
+            text = "Yeni kopya olarak kaydet"
+            setTextColor(DeckUi.text)
+            panel.addView(this)
+        } else null
         val dialog = DeckUi.dialog(this)
             .setTitle(if (current == null) "Yeni buton" else "Butonu düzenle")
             .setView(DeckUi.scrollForm(panel)).setNegativeButton("Vazgeç", null).setPositiveButton("Kaydet", null)
@@ -613,10 +714,20 @@ class MainActivity : Activity() {
             displayed.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val input = title.text.toString().trim()
                 if (input.isEmpty()) { title.error = "Buton adı gerekli"; return@setOnClickListener }
-                val replacement = JSONObject().put("id", id).put("label", input)
+                val target = if (clone?.isChecked == true) UUID.randomUUID().toString() else id
+                val replacement = JSONObject().put("id", target).put("label", input)
                     .put("action", actions.keys.elementAt(action.selectedItemPosition))
-                model.place(id, panelId, span.selectedItemPosition + 1, tints.values.elementAt(tint.selectedItemPosition))
-                saveEdit(originalRevision, id, replacement, model)
+                if (replacement.getString("action") == "macro") {
+                    val definition = routine.snapshot()
+                    if (definition == null) {
+                        displayed.setTitle("Makro adımlarını ve otomasyon alanlarını kontrol et")
+                        return@setOnClickListener
+                    }
+                    replacement.put("routine", definition)
+                }
+                current?.optString("art")?.takeIf { it.isNotEmpty() }?.let { replacement.put("art", it) }
+                model.place(target, panelId, span.selectedItemPosition + 1, tints.values.elementAt(tint.selectedItemPosition))
+                saveEdit(originalRevision, target, replacement, model)
                 displayed.dismiss()
             }
         }
@@ -685,19 +796,43 @@ class MainActivity : Activity() {
             renderBody()
             return
         }
+        if (record.getString("action") == "macro" && activeRoutine != null) {
+            DeckUi.dialog(this).setTitle("Makro çalışıyor")
+                .setNegativeButton("Kapat", null)
+                .setPositiveButton("Makroyu iptal et") { _, _ ->
+                    activeRoutine?.let { link.request(message("cancel_operation").put("operation", it)) {} }
+                }.showDeck()
+            return
+        }
         val operation = UUID.randomUUID().toString()
         val restingBackground = view.background
         view.isEnabled = false
-        link.request(message("execute").put("operation", operation).put("button", record.getString("id"))) { result ->
+        val deadline = android.os.SystemClock.elapsedRealtime() + 66_000
+        fun process(result: JSONObject?) {
             handler.post {
                 if (isDestroyed) return@post
                 view.isEnabled = true
                 val state = if (result?.optString("operation") == operation) result.optString("status") else "unknown"
+                if (state == "running" && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    activeRoutine = operation
+                    handler.postDelayed({
+                        if (!isDestroyed) link.request(message("operation_status").put("operation", operation), ::process)
+                    }, 450)
+                    return@post
+                }
+                if (activeRoutine == operation) activeRoutine = null
                 view.background = DeckUi.shape(this, surface, 22, if (state == "ok") DeckUi.success else DeckUi.danger)
                 handler.postDelayed({ view.background = restingBackground }, 520)
-                if (state != "ok") notify(if (state == "failed") "Windows işlemi tamamlayamadı." else "İşlem sonucu doğrulanamadı.")
+                if (state != "ok") notify(when (state) {
+                    "failed" -> "Windows işlemi tamamlayamadı."
+                    "busy" -> "Başka bir makro çalışıyor."
+                    "canceled" -> "Makro iptal edildi."
+                    "timeout" -> "Makro zaman aşımına uğradı."
+                    else -> "İşlem sonucu doğrulanamadı."
+                })
             }
         }
+        link.request(message("execute").put("operation", operation).put("button", record.getString("id")), ::process)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

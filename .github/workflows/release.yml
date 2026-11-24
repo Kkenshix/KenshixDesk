@@ -1,0 +1,114 @@
+name: İmzalı sürüm
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kenshixdeck-stable
+  cancel-in-progress: false
+
+jobs:
+  stable:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository && vars.DECK_PUBLISH_STABLE == 'true'
+    runs-on: windows-2025
+    environment: stable
+    permissions:
+      contents: write
+    env:
+      DECK_SHA: ${{ github.event.workflow_run.head_sha }}
+      CI_NUMBER: ${{ github.event.workflow_run.run_number }}
+      DECK_UPDATE_PUBLIC_KEY: ${{ vars.DECK_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Sürüm numarasını belirle
+        shell: pwsh
+        run: |
+          $number = [int]$env:CI_NUMBER + 1000
+          if ($env:DECK_UPDATE_PUBLIC_KEY -notmatch '^[A-Za-z0-9+/]{43}=$') { throw 'Ed25519 yayın anahtarı yok.' }
+          "DECK_BUILD=$number" >> $env:GITHUB_ENV
+      - name: Windows x64
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.97.1 build --release --locked
+      - name: Android release
+        shell: pwsh
+        env:
+          KEYSTORE_B64: ${{ secrets.DECK_KEYSTORE_BASE64 }}
+          DECK_STORE_PASSWORD: ${{ secrets.DECK_STORE_PASSWORD }}
+          DECK_KEY_ALIAS: ${{ secrets.DECK_KEY_ALIAS }}
+          DECK_KEY_PASSWORD: ${{ secrets.DECK_KEY_PASSWORD }}
+        run: |
+          $env:DECK_KEYSTORE = Join-Path $env:RUNNER_TEMP 'kenshixdeck-production.jks'
+          try {
+            [IO.File]::WriteAllBytes($env:DECK_KEYSTORE, [Convert]::FromBase64String($env:KEYSTORE_B64))
+            Push-Location android
+            try {
+              & ./gradlew.bat assembleRelease
+              if ($LASTEXITCODE) { throw 'İmzalı APK üretilemedi.' }
+            } finally { Pop-Location }
+            $sdk = Join-Path $env:ANDROID_HOME 'build-tools'
+            $apkSigner = Get-ChildItem $sdk -Directory | Sort-Object Name -Descending |
+              ForEach-Object { Join-Path $_.FullName 'apksigner.bat' } |
+              Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            if (-not $apkSigner) { throw 'APK imza doğrulayıcısı yok.' }
+            & $apkSigner verify android/app/build/outputs/apk/release/app-release.apk
+            if ($LASTEXITCODE) { throw 'APK imzası geçersiz.' }
+          } finally { Remove-Item -LiteralPath $env:DECK_KEYSTORE -ErrorAction SilentlyContinue }
+      - name: Manifesti imzala ve doğrula
+        shell: pwsh
+        env:
+          SIGNING_KEY_B64: ${{ secrets.DECK_RELEASE_ED25519_PKCS8_BASE64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory release | Out-Null
+          Copy-Item target/release/kenshixdeck.exe release/KenshixDeck-Windows-x64.exe
+          Copy-Item android/app/build/outputs/apk/release/app-release.apk release/KenshixDeck-Android.apk
+          function Asset([string]$path) {
+            @{ bytes = (Get-Item -LiteralPath $path).Length; sha256 = (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() }
+          }
+          $version = (Get-Content Cargo.toml | Select-String '^version = "([0-9.]+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $manifest = @{
+            product = 'KenshixDeck'; channel = 'stable'; protocol = 1
+            version = $version; build = [int]$env:DECK_BUILD; minimum_build = 0
+            commit = $env:DECK_SHA; published = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            windows = Asset 'release/KenshixDeck-Windows-x64.exe'
+            android = Asset 'release/KenshixDeck-Android.apk'
+          }
+          $manifest | ConvertTo-Json -Compress -Depth 4 | Set-Content -LiteralPath release/manifest.json -Encoding utf8NoBOM
+          $key = Join-Path $env:RUNNER_TEMP 'deck-signing.der'
+          $public = Join-Path $env:RUNNER_TEMP 'deck-public.der'
+          try {
+            [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:SIGNING_KEY_B64))
+            $openssl = Join-Path $env:ProgramFiles 'Git/usr/bin/openssl.exe'
+            & $openssl pkey -in $key -inform DER -pubout -outform DER -out $public
+            if ($LASTEXITCODE) { throw 'Yayın anahtarı okunamadı.' }
+            $raw = [IO.File]::ReadAllBytes($public)
+            if ($raw.Length -ne 44 -or [Convert]::ToBase64String($raw[12..43]) -cne $env:DECK_UPDATE_PUBLIC_KEY) { throw 'Yayın anahtarı uyuşmuyor.' }
+            & $openssl pkeyutl -sign -inkey $key -keyform DER -rawin -in release/manifest.json -out release/manifest.sig
+            if ($LASTEXITCODE) { throw 'Manifest imzalanamadı.' }
+            & $openssl pkeyutl -verify -pubin -inkey $public -keyform DER -rawin -in release/manifest.json -sigfile release/manifest.sig
+            if ($LASTEXITCODE) { throw 'Manifest imzası doğrulanamadı.' }
+          } finally { Remove-Item -LiteralPath $key,$public -ErrorAction SilentlyContinue }
+      - name: İmzalı GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem -File release | Select-Object -ExpandProperty FullName
+          gh release create "build-$env:DECK_BUILD" @files --repo "${{ github.repository }}" --target $env:DECK_SHA --title "KenshixDeck · $env:DECK_BUILD" --generate-notes --latest
+          exit $LASTEXITCODE

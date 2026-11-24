@@ -10,6 +10,7 @@ pub(crate) fn open(path: &std::path::Path) -> Result<Connection> {
     db.execute_batch(
         "PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value BLOB NOT NULL);
+         CREATE TABLE IF NOT EXISTS button_art (id TEXT PRIMARY KEY, data BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS operations (
              id TEXT PRIMARY KEY, created INTEGER NOT NULL DEFAULT (unixepoch()),
              result TEXT NOT NULL
@@ -56,6 +57,19 @@ pub(crate) fn save(db: &mut Connection, mut next: Deck) -> Result<Option<Deck>> 
         next.layout = Some(layout);
     }
     ensure!(next.validate(), "geçersiz panel bilgisi");
+    for id in next
+        .buttons
+        .iter()
+        .filter_map(|button| button.art.as_deref())
+    {
+        ensure!(
+            transaction
+                .query_row("SELECT 1 FROM button_art WHERE id = ?", [id], |_| Ok(()))
+                .optional()?
+                .is_some(),
+            "buton görseli bulunamadı"
+        );
+    }
     next.revision = old
         .revision
         .checked_add(1)
@@ -91,6 +105,16 @@ pub(crate) fn claim(db: &mut Connection, id: Uuid) -> Result<Option<String>> {
     }
     transaction.commit()?;
     Ok(result)
+}
+
+pub(crate) fn operation_status(db: &Connection, id: Uuid) -> Result<Option<String>> {
+    Ok(db
+        .query_row(
+            "SELECT result FROM operations WHERE id = ?",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 pub(crate) fn finish(db: &Connection, id: Uuid, result: &str) -> Result<()> {

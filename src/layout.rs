@@ -13,15 +13,15 @@ pub(crate) struct Layout {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Panel {
-    id: Uuid,
-    name: String,
-    parent: Option<Uuid>,
-    kind: PanelKind,
+    pub id: Uuid,
+    pub name: String,
+    pub parent: Option<Uuid>,
+    pub kind: PanelKind,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum PanelKind {
+pub(crate) enum PanelKind {
     Profile,
     Page,
     Folder,
@@ -30,9 +30,9 @@ enum PanelKind {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Placement {
-    panel: Option<Uuid>,
-    color: Option<String>,
-    span: u8,
+    pub panel: Option<Uuid>,
+    pub color: Option<String>,
+    pub span: u8,
 }
 
 impl Layout {

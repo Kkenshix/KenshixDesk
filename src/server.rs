@@ -86,10 +86,12 @@ pub(crate) async fn start() -> Result<()> {
     let mut headless = false;
     let mut obs_port = None;
     let mut edit = None;
+    let mut editor = false;
     let mut adb: Option<(String, String)> = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--pair" => pair = true,
+            "--editor" => editor = true,
             "--buttons" | "--add-button" | "--remove-button" => {
                 ensure!(
                     edit.is_none(),
@@ -139,6 +141,9 @@ pub(crate) async fn start() -> Result<()> {
             .join("KenshixDeck");
     std::fs::create_dir_all(&directory)?;
     let mut db = store::open(&directory.join("deck.sqlite3"))?;
+    if editor {
+        return crate::editor::open(db, adb);
+    }
     if let Some(edit) = edit {
         return edit.apply(&mut db);
     }
@@ -177,9 +182,12 @@ pub(crate) async fn start() -> Result<()> {
     if let Some(pairing) = &pairing {
         println!("Eşleştirme (5 dakika): {}.{}", fingerprint, pairing.code);
     }
+    let editor_adb = adb.clone();
+    crate::updater::launch(directory.clone(), adb.clone());
     if let Some((executable, serial)) = adb {
         tokio::spawn(adb_reverse(executable, serial));
     }
+    crate::automation::launch(directory.join("deck.sqlite3"));
     let shared = Arc::new(Mutex::new(Host { db, pairing }));
     if !headless {
         let (ready, started) = std::sync::mpsc::sync_channel(1);
@@ -221,6 +229,8 @@ Build: {}",
                     Ok(())
                 },
                 status,
+                directory,
+                editor_adb,
                 ready,
             );
             if let Err(error) = result {
@@ -400,7 +410,9 @@ fn operation(
 
 fn handle(db: &mut Connection, request: Request) -> Result<Value> {
     Ok(match request {
-        Request::Snapshot => json!({"type":"snapshot","deck":store::deck(db)?}),
+        Request::Snapshot => {
+            json!({"type":"snapshot","deck":store::deck(db)?,"alert":crate::automation::alert(db)})
+        }
         Request::Save { deck } if deck.validate() => match store::save(db, deck)? {
             Some(deck) => json!({"type":"saved","deck":deck}),
             None => json!({"type":"conflict","deck":store::deck(db)?}),
@@ -413,6 +425,10 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
                 .buttons
                 .into_iter()
                 .find(|record| record.id == button);
+            if let Some(routine) = button.as_ref().and_then(|button| button.routine.clone()) {
+                let status = crate::routine::start(db, id, routine)?;
+                return Ok(json!({"type":"action_result","operation":id,"status":status}));
+            }
             match button.map(|button| button.action) {
                 Some(
                     action @ (Action::PlayPause
@@ -427,8 +443,25 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
                 _ => json!({"type":"action_result","operation":id,"status":"failed"}),
             }
         }
+        Request::ButtonArt { id, offset } => crate::art::chunk(db, &id, offset)?,
+        Request::OperationStatus { operation } => {
+            let status = crate::routine::status(db, operation)?;
+            json!({"type":"action_result","operation":operation,"status":status})
+        }
+        Request::CancelOperation { operation } => {
+            crate::routine::cancel(operation);
+            let status = crate::routine::status(db, operation)?;
+            json!({"type":"action_result","operation":operation,"status":status})
+        }
         Request::ObsStatus => crate::obs::status(db)
             .unwrap_or_else(|_| json!({"type":"error","code":"obs_unavailable"})),
+        Request::UpdateStatus => {
+            let state = db
+                .path()
+                .and_then(|path| std::path::Path::new(path).parent())
+                .and_then(crate::updater::read_status);
+            json!({"type":"update_status","state":state})
+        }
         Request::Metrics => json!({"type":"metrics","measurements":crate::metrics::read()}),
         Request::Mixer => json!({"type":"mixer","levels":crate::audio::mixer()?}),
         Request::SetVolume {

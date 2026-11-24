@@ -116,6 +116,12 @@ pub(crate) fn run(db: &Connection, action: Action) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn recording(db: &Connection) -> Result<bool> {
+    Obs::connect(db)?.request("GetRecordStatus")?["outputActive"]
+        .as_bool()
+        .context("OBS kayıt durumu yok")
+}
+
 pub(crate) fn status(db: &Connection) -> Result<Value> {
     let mut obs = Obs::connect(db)?;
     let recording = obs.request("GetRecordStatus")?;

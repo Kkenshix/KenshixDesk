@@ -1,0 +1,1151 @@
+use std::{
+    collections::HashMap,
+    io::{BufReader, Cursor},
+    time::{Duration, Instant},
+};
+
+use anyhow::Result;
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Vec2};
+use image::{AnimationDecoder, DynamicImage};
+use rusqlite::Connection;
+use uuid::Uuid;
+
+use crate::{
+    art,
+    layout::{Panel, PanelKind, Placement},
+    protocol::{Action, Button, Deck},
+    routine::{Routine, Step},
+    store,
+};
+
+const COLUMNS: usize = 5;
+const PANEL: Color32 = Color32::from_rgb(17, 17, 20);
+const ACCENT: Color32 = Color32::from_rgb(196, 177, 255);
+
+pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> {
+    let deck = store::deck(&db)?;
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1080.0, 645.0])
+            .with_min_inner_size([740.0, 500.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "KenshixDeck · Panel editörü",
+        options,
+        Box::new(move |creation| {
+            creation.egui_ctx.set_visuals(egui::Visuals::dark());
+            Ok(Box::new(Editor {
+                db,
+                deck,
+                panel: None,
+                selected: None,
+                rename: None,
+                message: String::new(),
+                drag: None,
+                textures: HashMap::new(),
+                dirty: false,
+                resize_start: None,
+                phone: adb.map(PhonePreview::new),
+            }))
+        }),
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+struct Editor {
+    db: Connection,
+    deck: Deck,
+    panel: Option<Uuid>,
+    selected: Option<Uuid>,
+    rename: Option<(Uuid, String)>,
+    message: String,
+    drag: Option<Uuid>,
+    textures: HashMap<String, ArtPreview>,
+    dirty: bool,
+    resize_start: Option<(Uuid, f32)>,
+    phone: Option<PhonePreview>,
+}
+
+impl Editor {
+    fn save(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        match store::save(&mut self.db, self.deck.clone()) {
+            Ok(Some(deck)) => {
+                self.deck = deck;
+                self.dirty = false;
+                self.message = "Telefona gönderildi".into();
+            }
+            Ok(None) => {
+                self.message = "Telefon bu paneli değiştirdi. Güncel panel yüklendi.".into();
+                if let Ok(deck) = store::deck(&self.db) {
+                    self.deck = deck;
+                    self.dirty = false;
+                }
+            }
+            Err(error) => self.message = error.to_string(),
+        }
+    }
+
+    fn placement(&self, id: Uuid) -> Placement {
+        self.deck
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.placements.get(&id))
+            .cloned()
+            .unwrap_or(Placement {
+                panel: None,
+                color: None,
+                span: 1,
+            })
+    }
+
+    fn place(&mut self, id: Uuid, placement: Placement) {
+        self.deck
+            .layout
+            .get_or_insert_default()
+            .placements
+            .insert(id, placement);
+        self.dirty = true;
+    }
+
+    fn panel_name(&self, id: Option<Uuid>) -> &str {
+        id.and_then(|id| {
+            self.deck
+                .layout
+                .as_ref()?
+                .panels
+                .iter()
+                .find(|panel| panel.id == id)
+        })
+        .map_or("Ana panel", |panel| panel.name.as_str())
+    }
+
+    fn create_panel(&mut self, kind: PanelKind) {
+        let parent = if kind == PanelKind::Profile {
+            None
+        } else {
+            self.panel
+        };
+        let id = Uuid::new_v4();
+        let name = match kind {
+            PanelKind::Profile => "Yeni profil",
+            PanelKind::Page => "Yeni sayfa",
+            PanelKind::Folder => "Yeni klasör",
+        };
+        self.deck.layout.get_or_insert_default().panels.push(Panel {
+            id,
+            name: name.into(),
+            parent,
+            kind,
+        });
+        self.rename = Some((id, name.into()));
+        self.panel = Some(id);
+        self.selected = None;
+        self.dirty = true;
+        self.save();
+    }
+
+    fn delete_panel(&mut self, id: Uuid) {
+        let Some(layout) = &mut self.deck.layout else {
+            return;
+        };
+        let occupied = layout.panels.iter().any(|panel| panel.parent == Some(id))
+            || layout
+                .placements
+                .values()
+                .any(|placement| placement.panel == Some(id));
+        if occupied {
+            self.message =
+                "Paneli silmeden önce içindeki butonları ve alt panelleri taşı veya sil.".into();
+            return;
+        }
+        self.panel = layout
+            .panels
+            .iter()
+            .find(|panel| panel.id == id)
+            .and_then(|panel| panel.parent);
+        layout.panels.retain(|panel| panel.id != id);
+        self.dirty = true;
+        self.save();
+    }
+
+    fn create_button(&mut self) {
+        let id = Uuid::new_v4();
+        self.deck.buttons.push(Button {
+            id,
+            label: "Yeni buton".into(),
+            action: Action::Mixer,
+            routine: None,
+            art: None,
+        });
+        self.place(
+            id,
+            Placement {
+                panel: self.panel,
+                color: None,
+                span: 1,
+            },
+        );
+        self.selected = Some(id);
+        self.save();
+    }
+
+    fn preview(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .fill(Color32::BLACK)
+            .corner_radius(23)
+            .inner_margin(egui::Margin::same(18))
+            .show(ui, |ui| {
+                ui.set_min_height(320.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("KenshixDeck").strong().size(17.0));
+                    ui.separator();
+                    ui.label(self.panel_name(self.panel));
+                });
+                ui.add_space(19.0);
+                let children: Vec<_> = self
+                    .deck
+                    .layout
+                    .iter()
+                    .flat_map(|layout| &layout.panels)
+                    .filter(|panel| panel.parent == self.panel && panel.kind != PanelKind::Profile)
+                    .cloned()
+                    .collect();
+                let buttons: Vec<_> = self
+                    .deck
+                    .buttons
+                    .iter()
+                    .filter(|button| self.placement(button.id).panel == self.panel)
+                    .cloned()
+                    .collect();
+                let mut tiles: Vec<Tile> = children.into_iter().map(Tile::Panel).collect();
+                tiles.extend(buttons.into_iter().map(Tile::Button));
+                tiles.push(Tile::Create);
+                let gap = 7.0;
+                let width = ui.available_width();
+                let cell = ((width - gap * 4.0) / 5.0).max(16.0);
+                let height = cell.clamp(72.0, 115.0);
+                let origin = ui.cursor().min;
+                let mut row = 0;
+                let mut column = 0;
+                let mut drop_onto = None;
+                for tile in tiles {
+                    let placement = if let Tile::Button(button) = &tile {
+                        Some(self.placement(button.id))
+                    } else {
+                        None
+                    };
+                    let span = placement
+                        .as_ref()
+                        .map_or(1, |place| usize::from(place.span));
+                    if column + span > COLUMNS {
+                        row += 1;
+                        column = 0;
+                    }
+                    let start = origin
+                        + Vec2::new(column as f32 * (cell + gap), row as f32 * (height + gap));
+                    let rect = Rect::from_min_size(
+                        start,
+                        Vec2::new(span as f32 * (cell + gap) - gap, height),
+                    );
+                    column += span;
+                    match tile {
+                        Tile::Panel(panel) => {
+                            let response =
+                                ui.interact(rect, ui.id().with(panel.id), Sense::click());
+                            phone_tile(
+                                ui,
+                                rect,
+                                &panel.name,
+                                if panel.kind == PanelKind::Page {
+                                    "Sayfa"
+                                } else {
+                                    "Klasör"
+                                },
+                                PANEL,
+                                false,
+                            );
+                            if response.clicked() {
+                                self.panel = Some(panel.id);
+                                self.selected = None;
+                            }
+                        }
+                        Tile::Button(button) => {
+                            let mut placement = placement.expect("button placement");
+                            let resize = Rect::from_min_max(
+                                Pos2::new(rect.max.x - 16.0, rect.min.y + 5.0),
+                                rect.max,
+                            );
+                            let body =
+                                Rect::from_min_max(rect.min, Pos2::new(resize.min.x, rect.max.y));
+                            let response =
+                                ui.interact(body, ui.id().with(button.id), Sense::click_and_drag());
+                            let handle = ui
+                                .interact(resize, ui.id().with((button.id, "size")), Sense::drag())
+                                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                            phone_tile(
+                                ui,
+                                rect,
+                                &button.label,
+                                action_label(button.action),
+                                placement
+                                    .color
+                                    .as_deref()
+                                    .and_then(parse_color)
+                                    .unwrap_or(PANEL),
+                                self.selected == Some(button.id),
+                            );
+                            if let Some(id) = &button.art {
+                                self.draw_art(ui, id, rect);
+                            }
+                            ui.painter().line_segment(
+                                [
+                                    resize.right_center() - Vec2::new(8.0, 8.0),
+                                    resize.right_center() - Vec2::new(8.0, -8.0),
+                                ],
+                                egui::Stroke::new(2.0_f32, Color32::from_gray(95)),
+                            );
+                            if response.clicked() {
+                                self.selected = Some(button.id);
+                            }
+                            if response.drag_started() {
+                                self.drag = Some(button.id);
+                                self.selected = Some(button.id);
+                            }
+                            if ui.input(|input| input.pointer.any_released())
+                                && ui
+                                    .input(|input| input.pointer.interact_pos())
+                                    .is_some_and(|point| body.contains(point))
+                            {
+                                drop_onto = Some(button.id);
+                            }
+                            if handle.drag_started() {
+                                self.resize_start = handle
+                                    .interact_pointer_pos()
+                                    .map(|point| (button.id, point.x));
+                            }
+                            if handle.drag_stopped()
+                                && let Some((id, start)) = self.resize_start.take()
+                                && id == button.id
+                                && let Some(end) = handle.interact_pointer_pos()
+                                && (end.x - start).abs() > 15.0
+                            {
+                                placement.span = if end.x > start { 2 } else { 1 };
+                                self.place(button.id, placement);
+                                self.save();
+                            }
+                        }
+                        Tile::Create => {
+                            ui.painter()
+                                .rect_filled(rect, 16, Color32::from_rgb(36, 28, 57));
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "+",
+                                egui::FontId::proportional(33.0),
+                                ACCENT,
+                            );
+                            if ui
+                                .interact(rect, ui.id().with("new"), Sense::click())
+                                .clicked()
+                            {
+                                self.create_button();
+                            }
+                        }
+                    }
+                }
+                ui.allocate_space(Vec2::new(width, (row + 1) as f32 * (height + gap)));
+                if ui.input(|input| input.pointer.any_released())
+                    && let (Some(from), Some(to)) = (self.drag.take(), drop_onto)
+                    && from != to
+                    && let (Some(from), Some(to)) = (
+                        self.deck
+                            .buttons
+                            .iter()
+                            .position(|button| button.id == from),
+                        self.deck.buttons.iter().position(|button| button.id == to),
+                    )
+                {
+                    let item = self.deck.buttons.remove(from);
+                    self.deck.buttons.insert(to, item);
+                    self.dirty = true;
+                    self.save();
+                }
+            });
+    }
+
+    fn draw_art(&mut self, ui: &egui::Ui, id: &str, tile: Rect) {
+        if !ui.clip_rect().intersects(tile) {
+            return;
+        }
+        if self.textures.len() >= 16 && !self.textures.contains_key(id) {
+            self.textures.clear();
+        }
+        let Some(preview) = self.textures.get(id) else {
+            if let Ok(Some(raw)) = art::read(&self.db, id)
+                && let Some(art) = ArtPreview::new(ui, id, &raw)
+            {
+                self.textures.insert(id.into(), art);
+                self.draw_art(ui, id, tile);
+            }
+            return;
+        };
+        let image = Rect::from_min_max(
+            tile.min + Vec2::new(9.0, 8.0),
+            Pos2::new(tile.max.x - 15.0, tile.max.y - 43.0),
+        );
+        let (texture, delay) = preview.frame();
+        if let Some(delay) = delay {
+            ui.ctx().request_repaint_after(delay);
+        }
+        let source = texture.size_vec2();
+        let scale = (image.width() / source.x).max(image.height() / source.y);
+        ui.painter()
+            .with_clip_rect(image.intersect(ui.clip_rect()))
+            .image(
+                texture.id(),
+                Rect::from_center_size(image.center(), source * scale),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+    }
+
+    fn inspect_button(&mut self, ui: &mut egui::Ui, id: Uuid) {
+        let Some(index) = self.deck.buttons.iter().position(|item| item.id == id) else {
+            return;
+        };
+        let mut placement = self.placement(id);
+        let panel_names: Vec<_> = std::iter::once((None, "Ana panel".to_owned()))
+            .chain(
+                self.deck
+                    .layout
+                    .iter()
+                    .flat_map(|layout| &layout.panels)
+                    .map(|panel| (Some(panel.id), panel.name.clone())),
+            )
+            .collect();
+        let current_name = self.panel_name(placement.panel).to_owned();
+        let button = &mut self.deck.buttons[index];
+        ui.heading("Buton");
+        let label = ui.add(
+            egui::TextEdit::singleline(&mut button.label)
+                .char_limit(60)
+                .hint_text("Buton adı"),
+        );
+        self.dirty |= label.changed();
+        let prior = button.action;
+        action_picker(ui, "button-action", &mut button.action, false);
+        if prior != button.action {
+            button.routine = (button.action == Action::Macro).then(|| Routine {
+                steps: vec![],
+                continue_on_error: false,
+                trigger: None,
+            });
+            self.dirty = true;
+        }
+        if let Some(routine) = &mut button.routine {
+            self.dirty |= routine_editor(ui, routine);
+        }
+        ui.separator();
+        let prior_span = placement.span;
+        ui.horizontal(|ui| {
+            ui.label("Genişlik");
+            ui.selectable_value(&mut placement.span, 1, "1 hücre");
+            ui.selectable_value(&mut placement.span, 2, "2 hücre");
+        });
+        let prior_color = placement.color.clone();
+        let mut color = placement
+            .color
+            .as_deref()
+            .and_then(parse_color)
+            .unwrap_or(PANEL);
+        ui.horizontal(|ui| {
+            ui.label("Renk");
+            if ui.color_edit_button_srgba(&mut color).changed() {
+                placement.color = Some(format!(
+                    "#{:02X}{:02X}{:02X}",
+                    color.r(),
+                    color.g(),
+                    color.b()
+                ));
+            }
+            if ui.small_button("Sıfırla").clicked() {
+                placement.color = None;
+            }
+        });
+        let prior_panel = placement.panel;
+        egui::ComboBox::from_label("Panel")
+            .selected_text(current_name)
+            .show_ui(ui, |ui| {
+                for (panel, name) in panel_names {
+                    ui.selectable_value(&mut placement.panel, panel, name);
+                }
+            });
+        if ui.button("GIF veya fotoğraf seç").clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("Görsel", &["gif", "png", "jpg", "jpeg"])
+                .pick_file()
+        {
+            match art::save(&self.db, &path) {
+                Ok(hash) => {
+                    button.art = Some(hash);
+                    self.dirty = true;
+                }
+                Err(error) => self.message = error.to_string(),
+            }
+        }
+        if button.art.is_some() && ui.small_button("Görseli kaldır").clicked() {
+            button.art = None;
+            self.dirty = true;
+        }
+        ui.separator();
+        let valid =
+            !button.label.trim().is_empty() && button.routine.as_ref().is_none_or(Routine::valid);
+        let save = ui.add_enabled(valid && self.dirty, egui::Button::new("Uygula"));
+        let clone = ui.button("Çoğalt").clicked();
+        let delete = ui.button("Butonu sil").clicked();
+        if prior_span != placement.span
+            || prior_color != placement.color
+            || prior_panel != placement.panel
+        {
+            self.place(id, placement.clone());
+            if valid {
+                self.save();
+            }
+        }
+        if save.clicked()
+            || (valid
+                && label.lost_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+        {
+            self.save();
+        }
+        if clone {
+            let mut copy = self.deck.buttons[index].clone();
+            copy.id = Uuid::new_v4();
+            self.selected = Some(copy.id);
+            self.place(copy.id, placement);
+            self.deck.buttons.insert(index + 1, copy);
+            self.save();
+        }
+        if delete {
+            self.deck.buttons.remove(index);
+            if let Some(layout) = &mut self.deck.layout {
+                layout.placements.remove(&id);
+            }
+            self.selected = None;
+            self.dirty = true;
+            self.save();
+        }
+    }
+}
+
+impl eframe::App for Editor {
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        ctx.request_repaint_after(Duration::from_millis(440));
+        if !self.dirty
+            && let Ok(next) = store::deck(&self.db)
+            && next.revision != self.deck.revision
+        {
+            self.deck = next;
+            if self.panel.is_some() && self.panel_name(self.panel) == "Ana panel" {
+                self.panel = None;
+            }
+        }
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_salt("panels")
+                    .selected_text(self.panel_name(self.panel))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.panel, None, "Ana panel");
+                        if let Some(layout) = &self.deck.layout {
+                            for panel in &layout.panels {
+                                ui.selectable_value(&mut self.panel, Some(panel.id), &panel.name);
+                            }
+                        }
+                    });
+                if ui.button("+ Profil").clicked() {
+                    self.create_panel(PanelKind::Profile);
+                }
+                let is_profile = self
+                    .deck
+                    .layout
+                    .iter()
+                    .flat_map(|layout| &layout.panels)
+                    .any(|panel| Some(panel.id) == self.panel && panel.kind == PanelKind::Profile);
+                if ui
+                    .add_enabled(is_profile, egui::Button::new("+ Sayfa"))
+                    .clicked()
+                {
+                    self.create_panel(PanelKind::Page);
+                }
+                if ui
+                    .add_enabled(self.panel.is_some(), egui::Button::new("+ Klasör"))
+                    .clicked()
+                {
+                    self.create_panel(PanelKind::Folder);
+                }
+                if let Some(id) = self.panel {
+                    if ui.button("Adını değiştir").clicked() {
+                        self.rename = Some((id, self.panel_name(self.panel).into()));
+                    }
+                    if ui.button("Paneli sil").clicked() {
+                        self.delete_panel(id);
+                    }
+                }
+            });
+            if let Some((id, name)) = &mut self.rename {
+                let id = *id;
+                let mut confirm = false;
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(name).char_limit(60));
+                    confirm = ui.button("Adı kaydet").clicked() && !name.trim().is_empty();
+                });
+                if confirm {
+                    if let Some(panel) = self
+                        .deck
+                        .layout
+                        .iter_mut()
+                        .flat_map(|layout| &mut layout.panels)
+                        .find(|panel| panel.id == id)
+                    {
+                        panel.name = name.trim().to_owned();
+                        self.dirty = true;
+                        self.save();
+                    }
+                    self.rename = None;
+                }
+            }
+        });
+        egui::SidePanel::right("inspector")
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(id) = self.selected {
+                        self.inspect_button(ui, id);
+                    } else {
+                        ui.label("Düzenlemek için önizlemeden bir buton seç.");
+                    }
+                });
+            });
+        egui::TopBottomPanel::bottom("state").show(ctx, |ui| {
+            ui.label(if self.message.is_empty() {
+                "Butonu sürükleyerek sırala. Sağ kenarından çekerek genişliğini değiştir."
+            } else {
+                &self.message
+            });
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.preview(ui);
+                if let Some(phone) = &mut self.phone {
+                    phone.show(ui);
+                }
+            });
+        });
+    }
+}
+
+struct ArtPreview {
+    frames: Vec<(egui::TextureHandle, u64)>,
+    started: Instant,
+    period_ms: u64,
+}
+
+impl ArtPreview {
+    fn new(ui: &egui::Ui, id: &str, data: &[u8]) -> Option<Self> {
+        fn texture(ui: &egui::Ui, name: String, image: DynamicImage) -> egui::TextureHandle {
+            let image = image.thumbnail(160, 120).into_rgba8();
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            );
+            ui.ctx()
+                .load_texture(name, color, egui::TextureOptions::LINEAR)
+        }
+        let mut frames = Vec::new();
+        let mut period_ms = 0;
+        if data.starts_with(b"GIF") {
+            let decoder =
+                image::codecs::gif::GifDecoder::new(BufReader::new(Cursor::new(data))).ok()?;
+            for (index, frame) in decoder.into_frames().take(48).enumerate() {
+                let frame = frame.ok()?;
+                let (numerator, denominator) = frame.delay().numer_denom_ms();
+                period_ms += u64::from((numerator / denominator.max(1)).clamp(33, 5000));
+                frames.push((
+                    texture(
+                        ui,
+                        format!("{id}-{index}"),
+                        DynamicImage::ImageRgba8(frame.into_buffer()),
+                    ),
+                    period_ms,
+                ));
+            }
+        } else {
+            let decoded = image::ImageReader::new(Cursor::new(data))
+                .with_guessed_format()
+                .ok()?
+                .decode()
+                .ok()?;
+            frames.push((texture(ui, id.into(), decoded), 0));
+        }
+        (!frames.is_empty()).then(|| Self {
+            frames,
+            started: Instant::now(),
+            period_ms,
+        })
+    }
+
+    fn frame(&self) -> (&egui::TextureHandle, Option<Duration>) {
+        if self.frames.len() < 2 {
+            return (&self.frames[0].0, None);
+        }
+        let position = (self.started.elapsed().as_millis() % u128::from(self.period_ms)) as u64;
+        let index = self.frames.partition_point(|(_, end)| *end <= position);
+        let (texture, end) = &self.frames[index];
+        (texture, Some(Duration::from_millis(*end - position)))
+    }
+}
+
+enum Tile {
+    Panel(Panel),
+    Button(Button),
+    Create,
+}
+
+fn phone_tile(ui: &egui::Ui, rect: Rect, text: &str, action: &str, color: Color32, selected: bool) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, 15, color);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            15,
+            egui::Stroke::new(2.0_f32, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let mark = match action {
+        "Sayfa" => "▤",
+        "Klasör" => "▱",
+        "Ses Mikseri" => "≋",
+        _ => "↗",
+    };
+    painter.text(
+        rect.left_top() + Vec2::new(10.0, 9.0),
+        egui::Align2::LEFT_TOP,
+        mark,
+        egui::FontId::proportional(17.0),
+        ACCENT,
+    );
+    painter.text(
+        rect.left_bottom() + Vec2::new(10.0, -25.0),
+        egui::Align2::LEFT_BOTTOM,
+        text,
+        egui::FontId::proportional(15.0),
+        Color32::WHITE,
+    );
+    painter.text(
+        rect.left_bottom() + Vec2::new(10.0, -9.0),
+        egui::Align2::LEFT_BOTTOM,
+        action,
+        egui::FontId::proportional(10.0),
+        Color32::LIGHT_GRAY,
+    );
+}
+
+fn parse_color(input: &str) -> Option<Color32> {
+    let value = u32::from_str_radix(input.strip_prefix('#')?, 16).ok()?;
+    Some(Color32::from_rgb(
+        (value >> 16) as u8,
+        (value >> 8) as u8,
+        value as u8,
+    ))
+}
+
+const ACTIONS: &[(Action, &str)] = &[
+    (Action::Mixer, "Ses Mikseri"),
+    (Action::Macro, "Tuş, tıklama veya makro"),
+    (Action::PlayPause, "Oynat / duraklat"),
+    (Action::NextTrack, "Sonraki parça"),
+    (Action::PreviousTrack, "Önceki parça"),
+    (Action::TaskView, "Görev görünümü"),
+    (Action::TaskManager, "Görev Yöneticisi"),
+    (Action::ObsStatus, "OBS durumu"),
+    (Action::ObsStartRecord, "OBS kaydı başlat"),
+    (Action::ObsStopRecord, "OBS kaydı durdur"),
+    (Action::ObsToggleRecord, "OBS kaydını aç / kapat"),
+    (Action::ObsPauseRecord, "OBS kaydını duraklat"),
+    (Action::ObsResumeRecord, "OBS kaydını sürdür"),
+    (Action::ObsStartStream, "OBS yayını başlat"),
+    (Action::ObsStopStream, "OBS yayını durdur"),
+    (Action::ObsStartReplay, "Replay Buffer başlat"),
+    (Action::ObsStopReplay, "Replay Buffer durdur"),
+    (Action::ObsSaveReplay, "Replay Buffer kaydet"),
+];
+
+fn action_label(action: Action) -> &'static str {
+    ACTIONS
+        .iter()
+        .find(|(item, _)| *item == action)
+        .map_or("", |(_, label)| *label)
+}
+
+fn action_picker(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    action: &mut Action,
+    nested: bool,
+) -> bool {
+    let before = *action;
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(action_label(*action))
+        .show_ui(ui, |ui| {
+            for (item, label) in ACTIONS {
+                if !nested || !matches!(item, Action::Mixer | Action::ObsStatus | Action::Macro) {
+                    ui.selectable_value(action, *item, *label);
+                }
+            }
+        });
+    before != *action
+}
+
+fn routine_editor(ui: &mut egui::Ui, routine: &mut Routine) -> bool {
+    let mut changed = ui
+        .checkbox(&mut routine.continue_on_error, "Hata verirse devam et")
+        .changed();
+    changed |= trigger_editor(ui, &mut routine.trigger);
+    let mut remove = None;
+    let mut swap = None;
+    let length = routine.steps.len();
+    for (index, step) in routine.steps.iter_mut().enumerate() {
+        ui.push_id(index, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}. adım", index + 1));
+                if index > 0 && ui.small_button("↑").clicked() {
+                    swap = Some((index, index - 1));
+                }
+                if index + 1 < length && ui.small_button("↓").clicked() {
+                    swap = Some((index, index + 1));
+                }
+                if ui.small_button("Sil").clicked() {
+                    remove = Some(index);
+                }
+            });
+            match step {
+                Step::Keys { keys, hold_ms } => {
+                    let mut entry = keys.join("+");
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut entry)
+                                .hint_text("Ctrl+Shift+M")
+                                .char_limit(70),
+                        )
+                        .changed()
+                    {
+                        *keys = entry.split('+').map(str::trim).map(str::to_owned).collect();
+                        changed = true;
+                    }
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(hold_ms)
+                                .range(0..=5000)
+                                .suffix(" ms basılı tut"),
+                        )
+                        .changed();
+                }
+                Step::Text { text } => {
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(text)
+                                .hint_text("Yazılacak metin")
+                                .char_limit(512),
+                        )
+                        .changed();
+                }
+                Step::Launch { executable } => {
+                    ui.horizontal(|ui| {
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(executable)
+                                    .hint_text(r"C:\...\Uygulama.exe")
+                                    .char_limit(400),
+                            )
+                            .changed();
+                        if ui.button("EXE seç").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Uygulama", &["exe"])
+                                .pick_file()
+                        {
+                            *executable = path.to_string_lossy().into_owned();
+                            changed = true;
+                        }
+                    });
+                }
+                Step::Click { x, y } => {
+                    ui.horizontal(|ui| {
+                        changed |= ui
+                            .add(egui::DragValue::new(x).prefix("X ").range(-65536..=65536))
+                            .changed();
+                        changed |= ui
+                            .add(egui::DragValue::new(y).prefix("Y ").range(-65536..=65536))
+                            .changed();
+                    });
+                }
+                Step::Action { action } => {
+                    changed |= action_picker(ui, "step-action", action, true)
+                }
+                Step::Wait { ms } => {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(ms)
+                                .range(1..=15000)
+                                .suffix(" ms bekle"),
+                        )
+                        .changed()
+                }
+                Step::WaitObs { ms } => {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(ms)
+                                .range(1..=15000)
+                                .prefix("OBS için ")
+                                .suffix(" ms"),
+                        )
+                        .changed()
+                }
+                Step::IfObs { skip } => {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(skip)
+                                .range(1..=23)
+                                .suffix(" adım atla (OBS kapalıysa)"),
+                        )
+                        .changed()
+                }
+            }
+        });
+    }
+    if let Some(index) = remove {
+        routine.steps.remove(index);
+        changed = true;
+    }
+    if let Some((first, second)) = swap {
+        routine.steps.swap(first, second);
+        changed = true;
+    }
+    if routine.steps.len() < 24 {
+        ui.menu_button("+ Makro adımı", |ui| {
+            let choices = [
+                (
+                    "Tuş veya kısayol",
+                    Step::Keys {
+                        keys: vec!["A".into()],
+                        hold_ms: 0,
+                    },
+                ),
+                (
+                    "Metin yaz",
+                    Step::Text {
+                        text: String::new(),
+                    },
+                ),
+                ("Koordinata tıkla", Step::Click { x: 0, y: 0 }),
+                (
+                    "Uygulama aç",
+                    Step::Launch {
+                        executable: String::new(),
+                    },
+                ),
+                ("Bekle", Step::Wait { ms: 500 }),
+                (
+                    "Hazır eylem",
+                    Step::Action {
+                        action: Action::PlayPause,
+                    },
+                ),
+                ("OBS hazır olana kadar bekle", Step::WaitObs { ms: 5000 }),
+                ("OBS hazır değilse adım atla", Step::IfObs { skip: 1 }),
+            ];
+            for (name, step) in choices {
+                if ui.button(name).clicked() {
+                    routine.steps.push(step);
+                    changed = true;
+                    ui.close();
+                }
+            }
+        });
+    }
+    changed
+}
+fn trigger_editor(ui: &mut egui::Ui, trigger: &mut Option<crate::automation::Trigger>) -> bool {
+    use crate::automation::Trigger;
+    fn kind(trigger: &Option<Trigger>) -> &'static str {
+        match trigger {
+            None => "Elle çalıştır",
+            Some(Trigger::HostStart) => "Host açıldığında",
+            Some(Trigger::Daily { .. }) => "Her gün belirli saatte",
+            Some(Trigger::AppStarted { .. }) => "Uygulama açıldığında",
+            Some(Trigger::AppStopped { .. }) => "Uygulama kapandığında",
+            Some(Trigger::ObsRecordingStarted) => "OBS kaydı başlayınca",
+            Some(Trigger::ObsRecordingStopped) => "OBS kaydı durunca",
+            Some(Trigger::DiskUsage { .. }) => "Disk doluluk uyarısı",
+        }
+    }
+    let before = trigger.clone();
+    egui::ComboBox::from_id_salt("trigger")
+        .selected_text(kind(trigger))
+        .show_ui(ui, |ui| {
+            for candidate in [
+                None,
+                Some(Trigger::HostStart),
+                Some(Trigger::Daily {
+                    hour: 18,
+                    minute: 0,
+                }),
+                Some(Trigger::AppStarted {
+                    executable: String::new(),
+                }),
+                Some(Trigger::AppStopped {
+                    executable: String::new(),
+                }),
+                Some(Trigger::ObsRecordingStarted),
+                Some(Trigger::ObsRecordingStopped),
+                Some(Trigger::DiskUsage { percent: 90 }),
+            ] {
+                let label = kind(&candidate);
+                if ui.selectable_label(kind(trigger) == label, label).clicked()
+                    && kind(trigger) != label
+                {
+                    *trigger = candidate;
+                }
+            }
+        });
+    match trigger {
+        Some(Trigger::Daily { hour, minute }) => {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(hour).range(0..=23).prefix("Saat "));
+                ui.add(egui::DragValue::new(minute).range(0..=59).prefix("Dakika "));
+            });
+        }
+        Some(Trigger::AppStarted { executable } | Trigger::AppStopped { executable }) => {
+            ui.add(
+                egui::TextEdit::singleline(executable)
+                    .hint_text("Uygulama adı, ör. notepad.exe")
+                    .char_limit(64),
+            );
+        }
+        Some(Trigger::DiskUsage { percent }) => {
+            ui.add(egui::DragValue::new(percent).range(10..=100).prefix("%"));
+        }
+        _ => {}
+    }
+    before != *trigger
+}
+struct PhonePreview {
+    adb: (String, String),
+    opened: bool,
+    pending: Option<std::sync::mpsc::Receiver<Result<egui::ColorImage>>>,
+    texture: Option<egui::TextureHandle>,
+    next: Instant,
+    unavailable: bool,
+}
+
+impl PhonePreview {
+    fn new(adb: (String, String)) -> Self {
+        Self {
+            adb,
+            opened: false,
+            pending: None,
+            texture: None,
+            next: Instant::now(),
+            unavailable: false,
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.toggle_value(&mut self.opened, "M22 ekranını göster · USB");
+        if !self.opened {
+            self.texture = None;
+            return;
+        }
+        if let Some(receiver) = &self.pending {
+            match receiver.try_recv() {
+                Ok(Ok(image)) => {
+                    self.texture = Some(ui.ctx().load_texture(
+                        "m22-screen",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                    self.unavailable = false;
+                    self.pending = None;
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.texture = None;
+                    self.unavailable = true;
+                    self.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.pending.is_none() && Instant::now() >= self.next {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            self.pending = Some(receiver);
+            self.next = Instant::now() + Duration::from_secs(2);
+            let adb = self.adb.clone();
+            let context = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(phone_frame(&adb));
+                context.request_repaint();
+            });
+        }
+        if let Some(texture) = &self.texture {
+            let size = texture.size_vec2();
+            let width = ui.available_width().min(size.x);
+            ui.add(
+                egui::Image::new((texture.id(), size)).fit_to_exact_size(size * (width / size.x)),
+            );
+        } else {
+            ui.label(if self.unavailable {
+                "USB bağlıyken ve KenshixDeck öndeyken görüntü alınır."
+            } else {
+                "M22 ekranı alınıyor…"
+            });
+        }
+    }
+}
+
+fn phone_frame((adb, serial): &(String, String)) -> Result<egui::ColorImage> {
+    use std::os::windows::process::CommandExt;
+    let run = |args: &[&str]| {
+        std::process::Command::new(adb)
+            .args(["-s", serial])
+            .args(args)
+            .creation_flags(0x08000000)
+            .output()
+    };
+    let foreground = || -> Result<bool> {
+        let windows = run(&["shell", "dumpsys", "activity", "activities"])?;
+        Ok(windows.status.success()
+            && String::from_utf8_lossy(&windows.stdout)
+                .lines()
+                .any(|line| {
+                    line.contains("topResumedActivity") && line.contains(" com.kenshix.deck/")
+                }))
+    };
+    anyhow::ensure!(foreground()?, "M22'de KenshixDeck önde değil");
+    let png = run(&["exec-out", "screencap", "-p"])?;
+    anyhow::ensure!(
+        png.status.success() && png.stdout.len() < 8 * 1024 * 1024 && foreground()?,
+        "M22 görüntüsü alınamadı"
+    );
+    let image =
+        image::load_from_memory_with_format(&png.stdout, image::ImageFormat::Png)?.into_rgba8();
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        [image.width() as usize, image.height() as usize],
+        image.as_raw(),
+    ))
+}

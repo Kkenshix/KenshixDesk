@@ -149,6 +149,7 @@ internal object DeckUi {
 internal class DeckChoice(
     context: Context, private val title: String, private val values: List<String>, initial: Int
 ) : LinearLayout(context) {
+    var onSelection: ((Int) -> Unit)? = null
     var selectedItemPosition = initial
         private set
 
@@ -156,6 +157,7 @@ internal class DeckChoice(
         DeckUi.choices(DeckUi.dialog(context).setTitle(title), values) { index ->
             selectedItemPosition = index
             selectionText(values[index])
+            onSelection?.invoke(index)
         }.setNegativeButton("Kapat", null).showDeck()
     }.apply {
         gravity = Gravity.CENTER_VERTICAL or Gravity.START

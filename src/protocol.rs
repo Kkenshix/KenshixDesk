@@ -20,9 +20,13 @@ pub(crate) struct Button {
     pub id: Uuid,
     pub label: String,
     pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine: Option<crate::routine::Routine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub art: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Action {
     PlayPause,
@@ -42,6 +46,20 @@ pub(crate) enum Action {
     ObsSaveReplay,
     ObsStatus,
     Mixer,
+    Macro,
+}
+
+impl Action {
+    pub(crate) fn is_windows(self) -> bool {
+        matches!(
+            self,
+            Self::PlayPause
+                | Self::NextTrack
+                | Self::PreviousTrack
+                | Self::TaskView
+                | Self::TaskManager
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +75,7 @@ pub(crate) enum Request {
     },
     Snapshot,
     Metrics,
+    UpdateStatus,
     ObsStatus,
     Save {
         deck: Deck,
@@ -64,6 +83,16 @@ pub(crate) enum Request {
     Execute {
         operation: Uuid,
         button: Uuid,
+    },
+    ButtonArt {
+        id: String,
+        offset: usize,
+    },
+    OperationStatus {
+        operation: Uuid,
+    },
+    CancelOperation {
+        operation: Uuid,
     },
     Mixer,
     SetVolume {
@@ -88,6 +117,12 @@ impl Deck {
                 && !label.chars().any(char::is_control)
                 && !button.id.is_nil()
                 && ids.insert(button.id)
+                && button.art.as_deref().is_none_or(crate::art::valid_id)
+                && match (&button.action, &button.routine) {
+                    (Action::Macro, Some(routine)) => routine.valid(),
+                    (Action::Macro, None) | (_, Some(_)) => false,
+                    (_, None) => true,
+                }
         });
         valid
             && self
@@ -118,6 +153,8 @@ mod tests {
             id: Uuid::new_v4(),
             label: "Müzik".to_owned(),
             action: Action::PlayPause,
+            routine: None,
+            art: None,
         };
         let deck = Deck {
             revision: 0,

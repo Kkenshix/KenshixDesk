@@ -12,7 +12,7 @@ android {
         minSdk = 30
         targetSdk = 35
         versionCode = providers.environmentVariable("DECK_BUILD").orElse("1").get().toInt()
-        versionName = "0.2.1"
+        versionName = "0.3.0"
         buildConfigField("String", "GIT_SHA", "\"" + providers.environmentVariable("DECK_SHA").orElse("local").get() + "\"")
     }
 

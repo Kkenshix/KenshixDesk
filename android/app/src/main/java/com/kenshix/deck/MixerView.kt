@@ -39,6 +39,14 @@ internal class MixerView(
             progressTintList = ColorStateList.valueOf(accent)
             thumbTintList = ColorStateList.valueOf(accent)
             contentDescription = label
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> view.parent.requestDisallowInterceptTouchEvent(true)
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                        view.parent.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
                 override fun onProgressChanged(bar: SeekBar, percent: Int, fromUser: Boolean) {
@@ -74,7 +82,7 @@ internal class MixerView(
                     }, LayoutParams(0, -2, 1f))
                     addView(value)
                 })
-                addView(slider)
+                addView(slider, LayoutParams(-1, dp(48)))
                 addView(mute, LayoutParams(-2, dp(44)).apply { gravity = Gravity.END })
             }, LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
         }
