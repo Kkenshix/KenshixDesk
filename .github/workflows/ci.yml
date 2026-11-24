@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Format, lint, test, build
+        shell: pwsh
+        env:
+          DECK_SHA: ${{ github.sha }}
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.97.1 fmt --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.97.1 clippy --workspace --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.97.1 test --workspace --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.97.1 build --release --locked
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Windows-x64-CI
+          path: target/release/kenshixdeck.exe
+          if-no-files-found: error
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: APK, lint ve test
+        working-directory: android
+        env:
+          DECK_SHA: ${{ github.sha }}
+          DECK_BUILD: ${{ github.run_number }}
+        run: bash ./gradlew assembleDebug lintDebug testDebugUnitTest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Android-debug-CI
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
