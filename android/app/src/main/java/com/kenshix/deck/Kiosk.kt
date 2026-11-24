@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.UserManager
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 
@@ -40,6 +41,7 @@ internal class Kiosk(private val activity: Activity) {
         }
         try {
             policy.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE)
+            policy.addUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS)
             policy.setLockTaskPackages(admin, arrayOf(activity.packageName))
             setHome(true)
             policy.addPersistentPreferredActivity(admin, filter, home)
@@ -72,6 +74,7 @@ internal class Kiosk(private val activity: Activity) {
         }
         if (locked()) attempt { activity.stopLockTask() }
         if (isOwner()) {
+            attempt { policy.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
             attempt { policy.clearPackagePersistentPreferredActivities(admin, activity.packageName) }
             attempt { setHome(false) }
             attempt { policy.setLockTaskPackages(admin, emptyArray()) }
