@@ -103,6 +103,8 @@ private class VideoDecoder(
     private var needsKey = true
     private var drainPosted = false
     private var codec: MediaCodec? = null
+    private var previousPresentationUs: Long? = null
+    private var previousRenderNs = 0L
     @Volatile private var closed = false
 
     fun enqueue(frame: ByteString) {
@@ -138,7 +140,9 @@ private class VideoDecoder(
                     if (codec === source) { inputs.addLast(index); drain() }
                 }
                 override fun onOutputBufferAvailable(source: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    if (codec === source) runCatching { source.releaseOutputBuffer(index, System.nanoTime()) }
+                    if (codec === source) runCatching {
+                        source.releaseOutputBuffer(index, renderTime(info.presentationTimeUs))
+                    }
                 }
                 override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
                     if (codec === source) { clearCodec(); failed() }
@@ -176,9 +180,25 @@ private class VideoDecoder(
         }
     }
 
+    private fun renderTime(presentationUs: Long): Long {
+        val now = System.nanoTime()
+        val gapUs = previousPresentationUs?.let { presentationUs - it }
+        val planned = gapUs?.takeIf { it in 1..250_000 }?.let { previousRenderNs + it * 1_000 }
+        val renderAt = if (planned == null || planned !in now - 8_000_000..now + 42_000_000) {
+            now + 22_000_000
+        } else {
+            maxOf(now, planned)
+        }
+        previousPresentationUs = presentationUs
+        previousRenderNs = renderAt
+        return renderAt
+    }
+
     private fun clearCodec() {
         val old = codec
         codec = null
+        previousPresentationUs = null
+        previousRenderNs = 0L
         inputs.clear()
         if (old != null) runCatching { old.release() }
     }
