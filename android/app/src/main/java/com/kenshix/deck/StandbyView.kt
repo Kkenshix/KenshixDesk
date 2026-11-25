@@ -14,8 +14,8 @@ import java.util.Locale
 
 internal class StandbyView(context: Context, private val link: DeckLink) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
-    private val clock = DeckUi.label(context, "", 62, DeckUi.text, 600)
-    private val date = DeckUi.label(context, "", 19, DeckUi.muted, 500)
+    private val clock = DeckUi.label(context, "", 64, DeckUi.text, 620).apply { gravity = Gravity.CENTER }
+    private val date = DeckUi.label(context, "", 17, DeckUi.muted, 500).apply { gravity = Gravity.CENTER }
     private val status = DeckUi.label(context, "PC verileri alınıyor", 12, DeckUi.muted, 500)
     private val cpu = Gauge(context, "CPU")
     private val gpu = Gauge(context, "GPU")
@@ -73,16 +73,38 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
         setBackgroundColor(DeckUi.BLACK)
         content.orientation = VERTICAL
         content.gravity = Gravity.CENTER
-        content.addView(clock)
-        content.addView(date, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 8) })
+        val brand = LinearLayout(context).apply {
+            orientation = VERTICAL
+            gravity = Gravity.CENTER
+            addView(DeckUi.dragon(context), LayoutParams(DeckUi.dp(context, 62), DeckUi.dp(context, 62)))
+            addView(DeckUi.label(context, "KenshixDeck", 17, DeckUi.text, 700).apply {
+                gravity = Gravity.CENTER
+            }, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 7) })
+        }
+        val separator = android.view.View(context).apply { setBackgroundColor(DeckUi.border) }
+        val time = LinearLayout(context).apply {
+            orientation = VERTICAL
+            gravity = Gravity.CENTER
+            addView(clock, LayoutParams(-1, -2))
+            addView(date, LayoutParams(-1, -2).apply { topMargin = DeckUi.dp(context, 7) })
+        }
+        content.addView(LinearLayout(context).apply {
+            gravity = Gravity.CENTER
+            addView(brand, LayoutParams(DeckUi.dp(context, 123), -2))
+            addView(separator, LayoutParams(DeckUi.dp(context, 1), DeckUi.dp(context, 66)).apply {
+                marginStart = DeckUi.dp(context, 12)
+                marginEnd = DeckUi.dp(context, 19)
+            })
+            addView(time, LayoutParams(DeckUi.dp(context, 238), -2))
+        }, LayoutParams(-2, -2))
         instruments.gravity = Gravity.CENTER
         for (meter in listOf(cpu, gpu, ram)) {
-            instruments.addView(meter.view, LayoutParams(DeckUi.dp(context, 108), -2).apply {
+            instruments.addView(meter.view, LayoutParams(DeckUi.dp(context, 120), -2).apply {
                 marginStart = DeckUi.dp(context, 5)
                 marginEnd = DeckUi.dp(context, 5)
             })
         }
-        content.addView(instruments, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 23) })
+        content.addView(instruments, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 22) })
         content.addView(status, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 14) })
         addView(content, LayoutParams(-2, -2))
         showMetrics(null)
@@ -112,9 +134,9 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
     private class Gauge(context: Context, private val title: String) {
         val view = LinearLayout(context).apply {
             orientation = VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(DeckUi.dp(context, 8), DeckUi.dp(context, 8), DeckUi.dp(context, 8), DeckUi.dp(context, 8))
-            background = DeckUi.shape(context, DeckUi.panel, 13)
+            gravity = Gravity.START
+            setPadding(DeckUi.dp(context, 13), DeckUi.dp(context, 8), DeckUi.dp(context, 8), DeckUi.dp(context, 8))
+            background = DeckUi.shape(context, DeckUi.BLACK, 12)
             addView(DeckUi.label(context, title, 12, DeckUi.muted, 600))
         }
         private val value: TextView = DeckUi.label(context, "—", 24, DeckUi.accent, 650)

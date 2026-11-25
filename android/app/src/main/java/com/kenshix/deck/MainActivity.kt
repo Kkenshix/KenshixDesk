@@ -22,7 +22,6 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 
@@ -79,6 +78,7 @@ class MainActivity : Activity() {
     private var dimmed = false
     private var standby = false
     private lateinit var header: View
+    private lateinit var headerDivider: View
     private var downX = 0f
     private var downY = 0f
     private var idleSeconds = 15
@@ -319,17 +319,15 @@ class MainActivity : Activity() {
             setPadding(dp(18), dp(8), dp(16), dp(8))
             minimumHeight = dp(76)
         }
-        val image = ImageView(this).apply {
-            setImageResource(R.drawable.dragon)
-            background = DeckUi.shape(this@MainActivity, DeckUi.accentPanel, 14)
-            setPadding(dp(7), dp(7), dp(7), dp(7))
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        val image = DeckUi.dragon(this).apply {
+            background = DeckUi.shape(context, DeckUi.BLACK, 13)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
-        top.addView(image, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(12) })
+        top.addView(image, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(13) })
         val brand = column().apply {
             addView(row().apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(label("KenshixDeck", 18, text, true).apply { letterSpacing = -.03f })
+                addView(label("KenshixDeck", 21, text, true).apply { letterSpacing = -.03f })
                 profilesView = row().apply { gravity = Gravity.CENTER_VERTICAL }
                 addView(android.widget.HorizontalScrollView(this@MainActivity).apply {
                     isHorizontalScrollBarEnabled = false
@@ -343,20 +341,21 @@ class MainActivity : Activity() {
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         clockView = label("", 12, muted).apply {
             gravity = Gravity.CENTER
-            minHeight = dp(42)
+            minHeight = dp(48)
             setPadding(dp(8), 0, dp(8), 0)
             contentDescription = "Saat ve performans ekranı"
             setOnClickListener { enterStandby() }
         }
         top.addView(clockView, LinearLayout.LayoutParams(-2, -2))
-        val menu = button("⋮") { openMenu() }.apply {
+        val menu = button("Ayarlar") { openMenu() }.apply {
             contentDescription = "Ayarlar"
             DeckUi.touch(this, surface, 16)
         }
-        top.addView(menu, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) })
+        top.addView(menu, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(8) })
         header = top
         root.addView(top)
-        root.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(-1, dp(1)))
+        headerDivider = View(this).apply { setBackgroundColor(line) }
+        root.addView(headerDivider, LinearLayout.LayoutParams(-1, dp(1)))
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
         root.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
@@ -400,6 +399,7 @@ class MainActivity : Activity() {
             transitionSide = 0
         }
         header.visibility = if (standby) View.GONE else View.VISIBLE
+        headerDivider.visibility = header.visibility
         if (standby) {
             if (body.getChildAt(0) !is StandbyView) display(StandbyView(this, link))
             return
@@ -432,7 +432,7 @@ class MainActivity : Activity() {
             contentDescription = "Yeni buton"
             textSize = 28f
             setTextColor(accent)
-            DeckUi.touch(this, DeckUi.accentPanel, 22, Color.rgb(74, 60, 110))
+            DeckUi.touch(this, DeckUi.BLACK, 15, DeckUi.muted)
         }
 
         if (connected()) {
@@ -517,7 +517,7 @@ class MainActivity : Activity() {
 
     private fun updateConnection() {
         statusView.text = status
-        statusView.setTextColor(if (connected()) DeckUi.success else muted)
+        statusView.setTextColor(if (connected()) text else muted)
     }
 
     private fun openMenu() {
@@ -594,7 +594,7 @@ class MainActivity : Activity() {
                 maxWidth = dp(220)
                 setPadding(dp(12), dp(8), dp(12), dp(8))
                 if (highlighted) {
-                    background = DeckUi.shape(context, DeckUi.accentPanel, 14, Color.TRANSPARENT)
+                    background = DeckUi.shape(context, DeckUi.accentPanel, 11, DeckUi.muted)
                     if (animate) {
                         alpha = .52f
                         this.animate().alpha(1f).setDuration(430).start()
@@ -871,9 +871,9 @@ class MainActivity : Activity() {
         updateRoutine(action.selectedItemPosition)
         action.onSelection = ::updateRoutine
         val span = DeckUi.choose(this, "Genişlik", listOf("Standart genişlik", "Çift genişlik"), model.spanFor(id) - 1)
-        val tints = linkedMapOf("Varsayılan renk" to null, "Petrol" to "#143731",
-            "Gece mavisi" to "#182B49", "Mürdüm" to "#3B2649", "Kiremit" to "#442C28")
-        model.colorFor(id)?.takeIf { it !in tints.values }?.let { tints["Mevcut özel renk"] = it }
+        val tints = linkedMapOf("Varsayılan" to null, "Siyah" to "#000000",
+            "Kömür" to "#161616", "Grafit" to "#282828", "Füme" to "#383838")
+        model.colorFor(id)?.takeIf { it !in tints.values }?.let { tints["Kayıtlı özel ton"] = it }
         val tint = DeckUi.choose(this, "Renk", tints.keys.toList(),
             tints.values.indexOf(model.colorFor(id)).coerceAtLeast(0))
         panel.addView(span)
@@ -1019,8 +1019,15 @@ class MainActivity : Activity() {
                     return@post
                 }
                 if (activeRoutine == operation) activeRoutine = null
-                view.background = DeckUi.shape(this, surface, 22, if (state == "ok") DeckUi.success else DeckUi.danger)
-                handler.postDelayed({ view.background = restingBackground }, 520)
+                val tile = view as? LinearLayout
+                val readout = tile?.getChildAt(tile.childCount - 1) as? TextView
+                val caption = readout?.text
+                view.background = DeckUi.shape(this, surface, 15, if (state == "ok") DeckUi.success else DeckUi.danger)
+                if (tile != null && tile.childCount >= 3) readout?.text = if (state == "ok") "✓ Tamamlandı" else "! İşlem durumu"
+                handler.postDelayed({
+                    view.background = restingBackground
+                    if (caption != null) readout?.text = caption
+                }, 660)
                 if (state != "ok") notify(when (state) {
                     "failed" -> "Windows işlemi tamamlayamadı."
                     "busy" -> "Başka bir makro çalışıyor."
@@ -1063,8 +1070,8 @@ class MainActivity : Activity() {
             isClickable = true
             isFocusable = true
             setPadding(dp(13), dp(12), dp(11), dp(12))
-            val fill = tint?.let(Color::parseColor) ?: surface
-            DeckUi.touch(this, fill, 22, if (tint == null) DeckUi.border else Color.TRANSPARENT)
+            val fill = DeckUi.tileShade(tint)
+            DeckUi.touch(this, fill, 15, DeckUi.border)
             clipToOutline = true
             addView(label(when (action) {
                 "Sayfa" -> "▤"

@@ -21,8 +21,49 @@ use crate::{
 const M22_CONTENT_WIDTH: f32 = 1489.0;
 const TILE_GAP: f32 = 15.0;
 const AUTO_HEIGHT: f32 = 210.0;
-const PANEL: Color32 = Color32::from_rgb(17, 17, 20);
-const ACCENT: Color32 = Color32::from_rgb(196, 177, 255);
+const PANEL: Color32 = Color32::from_gray(13);
+const CONTROL: Color32 = Color32::from_gray(23);
+const BORDER: Color32 = Color32::from_gray(52);
+const MUTED: Color32 = Color32::from_gray(185);
+const ACCENT: Color32 = Color32::WHITE;
+
+fn theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = Vec2::new(9.0, 9.0);
+    style.spacing.button_padding = Vec2::new(11.0, 6.0);
+    style.spacing.interact_size.y = 31.0;
+    let mut visual = egui::Visuals::dark();
+    visual.panel_fill = Color32::BLACK;
+    visual.window_fill = PANEL;
+    visual.extreme_bg_color = Color32::BLACK;
+    visual.faint_bg_color = CONTROL;
+    visual.window_stroke = egui::Stroke::new(1.0_f32, BORDER);
+    visual.override_text_color = Some(Color32::WHITE);
+    visual.selection.bg_fill = Color32::from_gray(52);
+    visual.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
+    visual.hyperlink_color = ACCENT;
+    visual.error_fg_color = MUTED;
+    visual.warn_fg_color = MUTED;
+    for widget in [
+        &mut visual.widgets.noninteractive,
+        &mut visual.widgets.inactive,
+        &mut visual.widgets.hovered,
+        &mut visual.widgets.active,
+        &mut visual.widgets.open,
+    ] {
+        widget.bg_fill = CONTROL;
+        widget.weak_bg_fill = CONTROL;
+        widget.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
+        widget.fg_stroke.color = ACCENT;
+        widget.corner_radius = egui::CornerRadius::same(7);
+    }
+    visual.widgets.hovered.bg_stroke.color = MUTED;
+    visual.widgets.active.bg_stroke.color = ACCENT;
+    visual.widgets.open.bg_stroke.color = ACCENT;
+    visual.widgets.hovered.weak_bg_fill = Color32::from_gray(38);
+    style.visuals = visual;
+    ctx.set_style(style);
+}
 
 pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> {
     let deck = store::deck(&db)?;
@@ -36,10 +77,20 @@ pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> 
         "KenshixDeck · Panel editörü",
         options,
         Box::new(move |creation| {
-            creation.egui_ctx.set_visuals(egui::Visuals::dark());
+            theme(&creation.egui_ctx);
+            let logo = egui::ColorImage::from_rgba_unmultiplied(
+                [32, 32],
+                include_bytes!("../assets/dragon-tray.rgba"),
+            );
+            let logo = creation.egui_ctx.load_texture(
+                "KenshixDeck logo",
+                logo,
+                egui::TextureOptions::LINEAR,
+            );
             Ok(Box::new(Editor {
                 db,
                 deck,
+                logo,
                 panel: None,
                 selected: None,
                 rename: None,
@@ -59,6 +110,7 @@ pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> 
 struct Editor {
     db: Connection,
     deck: Deck,
+    logo: egui::TextureHandle,
     panel: Option<Uuid>,
     selected: Option<Uuid>,
     rename: Option<(Uuid, String)>,
@@ -203,7 +255,8 @@ impl Editor {
     fn preview(&mut self, ui: &mut egui::Ui) {
         egui::Frame::new()
             .fill(Color32::BLACK)
-            .corner_radius(23)
+            .corner_radius(15)
+            .stroke(egui::Stroke::new(1.0_f32, BORDER))
             .inner_margin(egui::Margin::same(18))
             .show(ui, |ui| {
                 let screen_height = (ui.available_width() + 36.0) * 720.0 / 1600.0;
@@ -365,8 +418,7 @@ impl Editor {
                             }
                         }
                         Tile::Create => {
-                            ui.painter()
-                                .rect_filled(rect, 16, Color32::from_rgb(36, 28, 57));
+                            ui.painter().rect_filled(rect, 16, Color32::BLACK);
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -470,7 +522,6 @@ impl Editor {
             .collect();
         let current_name = self.panel_name(placement.panel).to_owned();
         let button = &mut self.deck.buttons[index];
-        ui.heading("Buton");
         let label = ui.add(
             egui::TextEdit::singleline(&mut button.label)
                 .char_limit(60)
@@ -530,20 +581,18 @@ impl Editor {
             placement.height_px = None;
         }
         let prior_color = placement.color.clone();
-        let mut color = placement
+        let mut tone = placement
             .color
             .as_deref()
             .and_then(parse_color)
-            .unwrap_or(PANEL);
+            .unwrap_or(PANEL)
+            .r();
         ui.horizontal(|ui| {
-            ui.label("Renk");
-            if ui.color_edit_button_srgba(&mut color).changed() {
-                placement.color = Some(format!(
-                    "#{:02X}{:02X}{:02X}",
-                    color.r(),
-                    color.g(),
-                    color.b()
-                ));
+            if ui
+                .add(egui::Slider::new(&mut tone, 0..=62).text("Buton tonu"))
+                .changed()
+            {
+                placement.color = Some(format!("#{tone:02X}{tone:02X}{tone:02X}"));
             }
             if ui.small_button("Sıfırla").clicked() {
                 placement.color = None;
@@ -629,19 +678,38 @@ impl eframe::App for Editor {
                 self.panel = None;
             }
         }
+        if self.dirty
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
+        {
+            self.save();
+        }
+        egui::TopBottomPanel::top("brand-bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::Image::new((self.logo.id(), Vec2::splat(29.0))));
+                ui.label(egui::RichText::new("KenshixDeck").size(23.0).strong());
+                if let Some(phone) = &mut self.phone {
+                    ui.separator();
+                    ui.selectable_value(&mut phone.opened, false, "Panel editörü");
+                    ui.selectable_value(&mut phone.opened, true, "M22 gerçek ekranı");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save = egui::Button::new(
+                        egui::RichText::new("Kaydet").color(Color32::BLACK).strong(),
+                    )
+                    .fill(ACCENT);
+                    if ui
+                        .add_enabled(self.dirty, save)
+                        .on_hover_text("Ctrl+S")
+                        .clicked()
+                    {
+                        self.save();
+                    }
+                });
+            });
+        });
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(self.dirty, egui::Button::new("Kaydet"))
-                    .clicked()
-                {
-                    self.save();
-                }
-                if let Some(phone) = &mut self.phone {
-                    ui.selectable_value(&mut phone.opened, false, "Düzenle");
-                    ui.selectable_value(&mut phone.opened, true, "M22 gerçek ekranı");
-                    ui.separator();
-                }
+                ui.label(egui::RichText::new("Panel").color(MUTED));
                 egui::ComboBox::from_id_salt("panels")
                     .selected_text(self.panel_name(self.panel))
                     .show_ui(ui, |ui| {
@@ -710,6 +778,8 @@ impl eframe::App for Editor {
             egui::SidePanel::right("inspector")
                 .default_width(280.0)
                 .show(ctx, |ui| {
+                    ui.heading("Buton ayarları");
+                    ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if let Some(id) = self.selected {
                             self.inspect_button(ui, id);
@@ -805,15 +875,13 @@ enum Tile {
 
 fn phone_tile(ui: &egui::Ui, rect: Rect, text: &str, action: &str, color: Color32, selected: bool) {
     let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 15, color);
-    if selected {
-        painter.rect_stroke(
-            rect,
-            15,
-            egui::Stroke::new(2.0_f32, ACCENT),
-            egui::StrokeKind::Inside,
-        );
-    }
+    painter.rect_filled(rect, 11, color);
+    let outline = if selected {
+        egui::Stroke::new(2.0_f32, ACCENT)
+    } else {
+        egui::Stroke::new(1.0_f32, BORDER)
+    };
+    painter.rect_stroke(rect, 11, outline, egui::StrokeKind::Inside);
     let mark = match action {
         "Sayfa" => "▤",
         "Klasör" => "▱",
@@ -845,11 +913,11 @@ fn phone_tile(ui: &egui::Ui, rect: Rect, text: &str, action: &str, color: Color3
 
 fn parse_color(input: &str) -> Option<Color32> {
     let value = u32::from_str_radix(input.strip_prefix('#')?, 16).ok()?;
-    Some(Color32::from_rgb(
-        (value >> 16) as u8,
-        (value >> 8) as u8,
-        value as u8,
-    ))
+    let red = (value >> 16) & 255;
+    let green = (value >> 8) & 255;
+    let blue = value & 255;
+    let shade = ((red * 21 + green * 72 + blue * 7) / 100).min(62);
+    Some(Color32::from_gray(shade as u8))
 }
 
 const ACTIONS: &[(Action, &str)] = &[

@@ -25,15 +25,15 @@ import android.widget.TextView
 
 internal object DeckUi {
     const val BLACK = Color.BLACK
-    val panel = Color.rgb(12, 12, 15)
-    val raised = Color.rgb(19, 18, 23)
-    val border = Color.rgb(43, 40, 52)
-    val text = Color.rgb(247, 245, 252)
-    val muted = Color.rgb(166, 160, 180)
-    val accent = Color.rgb(188, 173, 255)
-    val accentPanel = Color.rgb(23, 18, 37)
-    val success = Color.rgb(147, 231, 190)
-    val danger = Color.rgb(255, 171, 181)
+    val panel = Color.rgb(13, 13, 13)
+    val raised = Color.rgb(22, 22, 22)
+    val border = Color.rgb(49, 49, 49)
+    const val text = Color.WHITE
+    val muted = Color.rgb(185, 185, 185)
+    const val accent = Color.WHITE
+    val accentPanel = Color.rgb(30, 30, 30)
+    const val success = Color.WHITE
+    val danger = Color.rgb(178, 178, 178)
     private val ease = DecelerateInterpolator(1.65f)
 
     fun dp(context: Context, value: Int) = (context.resources.displayMetrics.density * value + .5f).toInt()
@@ -46,7 +46,11 @@ internal object DeckUi {
         }
 
     fun touch(view: View, fill: Int = raised, radius: Int = 14, outline: Int = border) {
-        view.background = RippleDrawable(ColorStateList.valueOf(0x33BCADFF), shape(view.context, fill, radius, outline), null)
+        view.background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
+            android.graphics.drawable.StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), shape(view.context, fill, radius, Color.WHITE))
+                addState(intArrayOf(), shape(view.context, fill, radius, outline))
+            }, shape(view.context, Color.WHITE, radius, Color.TRANSPARENT))
         if (!ValueAnimator.areAnimatorsEnabled()) return
         fun scale(value: Float, durationMs: Long) = AnimatorSet().apply {
             playTogether(
@@ -78,11 +82,25 @@ internal object DeckUi {
             isAllCaps = false
             setTextColor(if (primary) accent else DeckUi.text)
             setPadding(dp(context, 12), 0, dp(context, 12), 0)
-            minHeight = dp(context, 46)
-            minWidth = dp(context, 46)
-            touch(this, if (primary) accentPanel else raised)
+            minHeight = dp(context, 48)
+            minWidth = dp(context, 48)
+            touch(this, if (primary) accentPanel else panel, 12, if (primary) muted else border)
             setOnClickListener(run)
         }
+
+    fun dragon(context: Context) = android.widget.ImageView(context).apply {
+        setImageResource(R.drawable.dragon)
+        imageTintList = ColorStateList.valueOf(Color.WHITE)
+        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    fun tileShade(tint: String?): Int {
+        val color = tint?.let(Color::parseColor) ?: return panel
+        val shade = (Color.red(color) * 21 + Color.green(color) * 72 + Color.blue(color) * 7) / 100
+        val dark = shade.coerceIn(0, 62)
+        return Color.rgb(dark, dark, dark)
+    }
 
     fun screenHeading(context: Context, title: String, back: () -> Unit) = LinearLayout(context).apply {
         gravity = Gravity.CENTER_VERTICAL
@@ -185,7 +203,7 @@ internal fun AlertDialog.Builder.showDeck(): AlertDialog {
     dialog.show()
     val context = dialog.context
     dialog.window?.apply {
-        setBackgroundDrawable(DeckUi.shape(context, DeckUi.panel, 26))
+        setBackgroundDrawable(DeckUi.shape(context, DeckUi.BLACK, 18))
         setDimAmount(.72f)
         val available = (context.resources.configuration.screenWidthDp - 30).coerceIn(230, 500)
         setLayout(DeckUi.dp(context, available), WindowManager.LayoutParams.WRAP_CONTENT)
