@@ -99,7 +99,7 @@ class MainActivity : Activity() {
     private var saving = false
     private var lastDestination: String? = null
     private var noticeView: TextView? = null
-    private var activeRoutine: String? = null
+    private var activeRoutine: Pair<String, String>? = null
     private val animatedTiles = mutableListOf<MediaTile>()
     private val preferences by lazy { getSharedPreferences("deck", MODE_PRIVATE) }
     private val dim = Runnable {
@@ -871,12 +871,16 @@ class MainActivity : Activity() {
 
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun attachGestures(tile: View, record: JSONObject) {
-        val behavior = record.optJSONObject("behavior") ?: return
-        fun target(key: String) = rows().firstOrNull { it.optString("id") == behavior.optString(key) }
+        val behavior = record.optJSONObject("behavior")
+        fun target(key: String) = behavior?.optString(key)?.takeIf(String::isNotEmpty)?.let { id ->
+            rows().firstOrNull { it.optString("id") == id }
+        }
         val double = target("double_tap")
         val hold = target("long_press")
-        if (double == null && hold == null) return
-        if (hold != null) tile.setOnLongClickListener { execute(it, hold); true }
+        tile.setOnLongClickListener {
+            if (hold == null) openButtonOptions(record) else execute(it, hold)
+            true
+        }
         val detector = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
             override fun onDown(event: MotionEvent) = true
             override fun onSingleTapUp(event: MotionEvent): Boolean {
@@ -892,10 +896,25 @@ class MainActivity : Activity() {
                 return true
             }
             override fun onLongPress(event: MotionEvent) {
-                if (hold != null) tile.performLongClick()
+                tile.performLongClick()
             }
         })
         tile.setOnTouchListener { _, event -> detector.onTouchEvent(event); true }
+    }
+
+    private fun openButtonOptions(record: JSONObject) {
+        if (!connected()) { notify("Butonu düzenlemek için PC bağlantısı gerekli."); return }
+        val operation = activeRoutine?.takeIf { it.first == record.getString("id") }?.second
+        if (operation == null) {
+            editButton(record)
+        } else {
+            DeckUi.dialog(this).setTitle(record.getString("label"))
+                .setNegativeButton("Kapat", null)
+                .setNeutralButton("Düzenle") { _, _ -> editButton(record) }
+                .setPositiveButton("Makroyu iptal et") { _, _ ->
+                    link.request(message("cancel_operation").put("operation", operation)) {}
+                }.showDeck()
+        }
     }
 
     private fun choosePanel() {
@@ -1294,14 +1313,8 @@ class MainActivity : Activity() {
             renderBody()
             return
         }
-        if (record.getString("action") == "macro" && activeRoutine != null) {
-            DeckUi.dialog(this).setTitle("Makro çalışıyor")
-                .setNegativeButton("Kapat", null)
-                .setPositiveButton("Makroyu iptal et") { _, _ ->
-                    activeRoutine?.let { link.request(message("cancel_operation").put("operation", it)) {} }
-                }.showDeck()
-            return
-        }
+        if (record.getString("action") == "macro" && activeRoutine != null) return
+        val buttonId = record.getString("id")
         val operation = UUID.randomUUID().toString()
         val restingBackground = view.background
         view.isEnabled = false
@@ -1312,13 +1325,13 @@ class MainActivity : Activity() {
                 view.isEnabled = true
                 val state = if (result?.optString("operation") == operation) result.optString("status") else "unknown"
                 if (state == "running" && android.os.SystemClock.elapsedRealtime() < deadline) {
-                    activeRoutine = operation
+                    activeRoutine = buttonId to operation
                     handler.postDelayed({
                         if (!isDestroyed) link.request(message("operation_status").put("operation", operation), ::process)
                     }, 450)
                     return@post
                 }
-                if (activeRoutine == operation) activeRoutine = null
+                if (activeRoutine?.second == operation) activeRoutine = null
                 if (record.optString("action") == "macro") {
                     view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                     if (state == "ok") notify("Makro tamamlandı")
@@ -1341,7 +1354,7 @@ class MainActivity : Activity() {
                 })
             }
         }
-        link.request(message("execute").put("operation", operation).put("button", record.getString("id")), ::process)
+        link.request(message("execute").put("operation", operation).put("button", buttonId), ::process)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
