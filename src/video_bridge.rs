@@ -52,6 +52,7 @@ impl Default for VideoBridge {
 enum Site {
     Youtube,
     Kick,
+    Opera,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

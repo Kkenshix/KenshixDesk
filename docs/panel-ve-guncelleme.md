@@ -26,9 +26,9 @@ Bu panelde **OBS Kaydı** F9 gönderir. OBS kullanırken kaydı başlatmak ve du
 
 ## Opera’dan M22’ye video devri
 
-Windows uygulamasını bir kez `--setup-video-browser` ile çalıştır. Çıktıdaki klasörü Opera’da **Uzantılar → Geliştirici modu → Paketlenmemiş uzantıyı yükle** üzerinden seç. İlk kurulumdan sonra KenshixDeck Windows uygulamasını yeniden başlat ve açık YouTube veya Kick sekmesini bir kez yenile.
+Windows uygulamasını bir kez `--setup-video-browser` ile çalıştır. Çıktıdaki klasörü Opera’da **Uzantılar → Geliştirici modu → Paketlenmemiş uzantıyı yükle** üzerinden seç. Farklı sitelerde gömülü oynatıcıları algılamak için uzantıya bu sayfalarda çalışma izni ver. İlk kurulumdan sonra KenshixDeck Windows uygulamasını yeniden başlat ve açık video sekmesini bir kez yenile.
 
-Opera’da oynayan YouTube veya Kick sekmesinden ayrıldığında, tarayıcının video kareleri M22’ye yerel olarak aktarılır. Telefon siteden ikinci bir oynatma açmaz ve ses PC’de kalır. Kaynak sekmeye dönünce ana panel geri gelir. Duraklatma son kareyi ekranda bırakır ve PC’de video devam edince yeni kareler gelir. Alt çubukta **Kapat** ve **PC sesi** bulunur. Tarayıcının yakalamaya izin vermediği korumalı videolar aktarılmaz. Uzantı güncellendiğinde Opera’daki uzantıyı ve açık video sekmesini bir kez yenile.
+Opera’da oynayan bir video sekmesinden ayrıldığında, tarayıcının erişebildiği video kareleri M22’ye yerel olarak aktarılır. YouTube, Kick ve diğer sitelerdeki HTML video öğeleri, gömülü oynatıcılar ve canlı yayınlar aynı aktarımı kullanır. Kaynak ve bağlantı elverdiğinde hedef 60 FPS’tir. Ses PC’de kalır. Kaynak sekmeye dönünce ana panel geri gelir. Duraklatma son kareyi ekranda bırakır ve PC’de video devam edince yeni kareler gelir. Alt çubukta **Kapat** ve **PC sesi** bulunur. Tarayıcının yakalamayı engellediği korumalı videolar aktarılmaz. Uzantı güncellendiğinde Opera’daki uzantıyı ve açık video sekmesini bir kez yenile.
 
 ## Stable yayın kurulumu
 

@@ -1,5 +1,6 @@
 package com.kenshix.deck
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
@@ -58,6 +59,9 @@ class MainActivity : Activity() {
     private val buttonArt by lazy { ButtonArt(link) }
     private val kiosk by lazy { Kiosk(this) }
     private lateinit var root: LinearLayout
+    private lateinit var stage: FrameLayout
+    private var transitionOverlay: View? = null
+    private var transitionAnimator: ValueAnimator? = null
     private lateinit var statusView: TextView
     private lateinit var clockView: TextView
     private lateinit var profilesView: LinearLayout
@@ -527,8 +531,51 @@ class MainActivity : Activity() {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        setContentView(root)
+        stage = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(-1, -1)) }
+        setContentView(stage)
         renderBody()
+    }
+
+    private fun showPageTransition() {
+        if (!ValueAnimator.areAnimatorsEnabled()) return
+        transitionAnimator?.cancel()
+        transitionOverlay?.let(stage::removeView)
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            alpha = .88f
+        }
+        val logo = DeckUi.dragon(this)
+        overlay.addView(logo, FrameLayout.LayoutParams(dp(62), dp(62), Gravity.CENTER).apply {
+            bottomMargin = dp(20)
+        })
+        val bar = View(this).apply {
+            background = DeckUi.shape(context, DeckUi.text, 2)
+            translationY = dp(40).toFloat()
+            scaleX = .08f
+        }
+        overlay.addView(bar, FrameLayout.LayoutParams(dp(92), dp(2), Gravity.CENTER))
+        transitionOverlay = overlay
+        stage.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1_000
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                val progress = it.animatedFraction
+                bar.scaleX = .08f + .92f * progress
+                overlay.alpha = .88f * (1f - progress) * (1f - progress)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    stage.removeView(overlay)
+                    if (transitionOverlay === overlay) {
+                        transitionOverlay = null
+                        transitionAnimator = null
+                    }
+                }
+            })
+            start()
+        }
     }
 
     private fun connected() = status == "USB" || status == "Wi-Fi"
@@ -550,22 +597,23 @@ class MainActivity : Activity() {
             mixer -> "mixer"
             else -> currentPanel ?: "deck"
         }
-        val animate = lastDestination != destination && destination != "browser_video" && lastDestination != "browser_video"
+        val changed = lastDestination != null && lastDestination != destination
         lastDestination = destination
         renderProfileStrip()
         fun display(view: View) {
             val previous = body.getChildAt(0) as? ScrollView
-            val keepScroll = !animate && previous != null && view is ScrollView
+            val keepScroll = !changed && previous != null && view is ScrollView
             val offset = if (keepScroll) previous?.scrollY ?: 0 else 0
             body.removeAllViews()
             body.addView(view, FrameLayout.LayoutParams(-1, -1))
             if (keepScroll) view.post { view.scrollTo(0, offset) }
-            if (animate && transitionSide != 0 && android.animation.ValueAnimator.areAnimatorsEnabled()) {
+            if (changed && transitionSide != 0 && ValueAnimator.areAnimatorsEnabled()) {
                 view.translationX = dp(32).toFloat() * transitionSide
                 view.alpha = 0.6f
                 view.animate().translationX(0f).alpha(1f).setDuration(370)
                     .setInterpolator(android.view.animation.DecelerateInterpolator(1.45f)).start()
-            } else if (animate) DeckUi.appear(view)
+            }
+            if (changed) showPageTransition()
             transitionSide = 0
         }
         header.visibility = if (standby || browserPlayer != null) View.GONE else View.VISIBLE

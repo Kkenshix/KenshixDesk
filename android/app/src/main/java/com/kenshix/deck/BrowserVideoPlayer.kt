@@ -29,7 +29,7 @@ internal data class BrowserOffer(
             val width = json.optInt("width")
             val height = json.optInt("height")
             val volume = json.optInt("volume", -1)
-            if (id != canonical || site !in setOf("youtube", "kick") || width !in 2..960 ||
+            if (id != canonical || site !in setOf("youtube", "kick", "opera") || width !in 2..960 ||
                 height !in 2..540 || width % 2 != 0 || height % 2 != 0 || volume !in 0..100) return null
             return BrowserOffer(id, site, width, height, volume)
         }
@@ -43,7 +43,11 @@ internal class BrowserVideoPlayer(
     private val setVolume: (Int) -> Unit,
 ) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
-    private val service = if (offer.site == "youtube") "YouTube" else "Kick"
+    private val service = when (offer.site) {
+        "youtube" -> "YouTube"
+        "kick" -> "Kick"
+        else -> "Opera"
+    }
     private val summary = DeckUi.label(context, service, 13, DeckUi.muted, 550)
     private var dragging = false
     private val decoder = VideoDecoder(offer.width, offer.height) {
@@ -177,7 +181,7 @@ private class VideoDecoder(
                     if (codec === source) { inputs.addLast(index); drain() }
                 }
                 override fun onOutputBufferAvailable(source: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    if (codec === source) runCatching { source.releaseOutputBuffer(index, true) }
+                    if (codec === source) runCatching { source.releaseOutputBuffer(index, System.nanoTime()) }
                 }
                 override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
                     if (codec === source) { clearCodec(); failed() }
@@ -186,6 +190,7 @@ private class VideoDecoder(
             }, handler)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             next.configure(format, output, null, 0)
             next.start()
         }.onFailure { clearCodec(); failed() }

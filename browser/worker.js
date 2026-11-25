@@ -1,6 +1,7 @@
 importScripts('config.js');
 
-const tabs = new Map();
+const frames = new Map();
+const unavailable = new Map();
 let socket;
 let ready = false;
 let current;
@@ -36,7 +37,7 @@ function connect() {
             current.port.postMessage({...reply,id:current.id,key:current.key});
         }
         if (reply.type === 'stop' && current) {
-            dismissed = current.tab + ':' + current.key;
+            dismissed = current.tab;
             stop();
         }
     };
@@ -72,26 +73,39 @@ function choose() {
     const foreground = nativeFocused === false ? null : focused;
     if (foreground === undefined) return;
     if (current) {
-        const data = tabs.get(current.tab);
+        const data = frames.get(current.frame);
         if (current.tab === foreground || data?.media?.key !== current.key || data.port !== current.port) {
             stop();
         }
     }
-    if (foreground !== null && dismissed?.startsWith(String(foreground) + ':')) dismissed = undefined;
-    const newest = [...tabs.entries()]
-        .filter(([,entry]) => entry.media?.playing)
-        .sort((a,b) => b[1].media.started - a[1].media.started)[0];
+    if (foreground !== null && dismissed === foreground) dismissed = undefined;
+    const players = new Map();
+    for (const entry of frames.values()) {
+        const media = entry.media;
+        if (!media?.playing || entry.tab === dismissed || unavailable.get(entry.frame) === media.key) continue;
+        const best = players.get(entry.tab)?.media;
+        if (!best || media.area > best.area || (media.area === best.area && media.started > best.started)) {
+            players.set(entry.tab,entry);
+        }
+    }
+    const newest = [...players.values()].sort((a,b) => b.media.started - a.media.started)[0];
     if (!newest) {
         trace(current ? 'paused' : 'no_media');
         return;
     }
-    const [tab, entry] = newest;
+    const {tab,frame,port,media} = newest;
     trace(current?.begun ? 'capturing' : 'playing');
-    if (tab === foreground || dismissed === tab + ':' + entry.media.key ||
-        (current?.tab === tab && current.key === entry.media.key)) return;
+    if (tab === foreground) {
+        stop();
+        return;
+    }
+    if (current?.port === port && current.key === media.key) return;
+    const old = current && frames.get(current.frame)?.media;
+    if (old && !old.playing && media.started <= old.started) return;
     stop();
-    current = {tab, port:entry.port, key:entry.media.key, id:crypto.randomUUID(), begun:false};
-    current.port.postMessage({type:'start', id:current.id, key:current.key});
+    current = {tab,frame,port,key:media.key,id:crypto.randomUUID(),begun:false};
+    try { port.postMessage({type:'start',id:current.id,key:current.key}); }
+    catch { frames.delete(frame); stop(); }
 }
 
 async function refresh(windowId) {
@@ -115,7 +129,7 @@ async function refresh(windowId) {
 }
 
 function sendFrame(message) {
-    if (socket?.bufferedAmount > 128 * 1024 || message.data.length > 350000) {
+    if (socket?.bufferedAmount > 192 * 1024 || message.data.length > 350000) {
         current.needsKey = true;
         return;
     }
@@ -133,18 +147,21 @@ function sendFrame(message) {
 
 chrome.runtime.onConnect.addListener(port => {
     const tab = port.sender?.tab;
-    if (port.name !== 'video' || !Number.isInteger(tab?.id) || tab.incognito ||
-        (port.sender.frameId !== undefined && port.sender.frameId !== 0)) return;
-    const id = tab.id;
-    tabs.set(id,{port,media:null});
+    if (port.name !== 'video' || !Number.isInteger(tab?.id) || tab.incognito) return;
+    const frame = tab.id + ':' + (port.sender.frameId ?? 0);
+    frames.set(frame,{tab:tab.id,frame,port,media:null});
+    unavailable.delete(frame);
     connect();
     void refresh();
     port.onMessage.addListener(message => {
-        const entry = tabs.get(id);
+        const entry = frames.get(frame);
         if (entry?.port !== port) return;
         if (message.type === 'sample') {
             const previous = entry.media;
             entry.media = message.media;
+            if (previous?.key !== entry.media?.key || (!previous?.playing && entry.media?.playing)) {
+                unavailable.delete(frame);
+            }
             if (current?.port === port && current.begun && entry.media?.key === current.key) {
                 if (previous?.playing !== entry.media.playing) transmit({type:'paused',value:!entry.media.playing});
                 if (previous?.volume !== entry.media.volume) transmit({type:'volume',percent:entry.media.volume});
@@ -161,15 +178,19 @@ chrome.runtime.onConnect.addListener(port => {
             } else if (message.type === 'frame' && current.begun && ready) {
                 sendFrame(message);
             } else if (message.type === 'unavailable') {
-                dismissed = current.tab + ':' + current.key;
+                unavailable.set(frame,current.key);
                 stop();
                 trace('no_frames');
                 transmit({type:'unavailable'});
+                choose();
             }
         }
     });
     port.onDisconnect.addListener(() => {
-        if (tabs.get(id)?.port === port) tabs.delete(id);
+        if (frames.get(frame)?.port === port) {
+            frames.delete(frame);
+            unavailable.delete(frame);
+        }
         choose();
     });
 });
@@ -187,6 +208,14 @@ chrome.tabs.onActivated.addListener(async info => {
         choose();
     } catch {}
 });
-chrome.tabs.onRemoved.addListener(id => { tabs.delete(id); choose(); });
+chrome.tabs.onRemoved.addListener(id => {
+    for (const [frame, entry] of frames) {
+        if (entry.tab === id) {
+            frames.delete(frame);
+            unavailable.delete(frame);
+        }
+    }
+    choose();
+});
 setInterval(() => transmit({type:'ping'}), 15000);
 connect();

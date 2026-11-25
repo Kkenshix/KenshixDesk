@@ -5,42 +5,55 @@ let lastVideo;
 let wasPlaying = false;
 let playback;
 let retry;
+let lastShadowScan = -Infinity;
+let shadowRoots = [];
+const videoKeys = new WeakMap();
+const hostname = location.hostname;
+const site = /(^|\.)youtube(?:-nocookie)?\.com$/.test(hostname) ? 'youtube'
+    : /(^|\.)kick\.com$/.test(hostname) ? 'kick' : 'opera';
 
 function select() {
-    const url = new URL(location.href);
-    const video = [...document.querySelectorAll('video')]
-        .filter(item => item.readyState >= 2 && !item.ended && item.videoWidth > 0)
-        .sort((a,b) => b.videoWidth * b.videoHeight - a.videoWidth * a.videoHeight)[0];
-    if (!video) return null;
-    if (url.hostname === 'www.youtube.com') {
-        const key = url.searchParams.get('v') || url.pathname.match(/^\/(?:shorts|live)\/([^/]+)\/?$/)?.[1];
-        if (/^[\w-]{11}$/.test(key ?? '')) return {site:'youtube',key,video};
-    } else {
-        const key = url.pathname.match(/^\/([a-z0-9_-]{2,50})\/?$/i)?.[1]?.toLowerCase();
-        if (key) return {site:'kick',key,video};
+    const candidates = [...document.querySelectorAll('video')];
+    if (!candidates.length && performance.now() - lastShadowScan >= 4000) {
+        lastShadowScan = performance.now();
+        const roots = [document];
+        for (const root of roots) {
+            for (const node of root.querySelectorAll('*')) {
+                if (node.shadowRoot) roots.push(node.shadowRoot);
+            }
+        }
+        shadowRoots = roots.slice(1);
     }
-    return null;
+    shadowRoots = shadowRoots.filter(root => root.host.isConnected);
+    for (const root of shadowRoots) candidates.push(...root.querySelectorAll('video'));
+    let best = null;
+    for (const video of candidates) {
+        if (video.readyState < 2 || video.ended || !video.videoWidth || video.mediaKeys) continue;
+        const rect = video.getBoundingClientRect();
+        const area = Math.round(rect.width * rect.height);
+        if (area < 1024 || (best && (best.area > area ||
+            (best.area === area && (video.paused || !best.video.paused))))) continue;
+        if (!videoKeys.has(video)) videoKeys.set(video, crypto.randomUUID());
+        best = {site,key:videoKeys.get(video),video,area};
+    }
+    return best;
 }
 
 function sample() {
-    const previous = source;
     source = select();
-    if (source?.video !== lastVideo || source?.key !== previous?.key) {
+    if (source?.video !== lastVideo) {
         lastVideo = source?.video;
         since = Date.now();
-        if (playback && source?.key === playback.key) {
-            const request = {id:playback.id,key:playback.key};
-            stop();
-            if (source) void start(request);
-        } else stop();
+        stop();
     }
     const playing = source ? !source.video.paused : false;
     if (playing && !wasPlaying && !playback) since = Date.now();
     wasPlaying = playing;
     const media = source ? {
-        site:source.site,key:source.key,started:since,playing,
+        site:source.site,key:source.key,started:since,playing,area:source.area,
         volume:source.video.muted ? 0 : Math.round(source.video.volume * 100)
     } : null;
+    if (!port && media) connect();
     try { port?.postMessage({type:'sample',media}); } catch {}
 }
 
@@ -78,9 +91,6 @@ async function start(message) {
         const ratio = Math.min(1, 960 / selected.video.videoWidth, 540 / selected.video.videoHeight);
         const width = 2 * Math.max(1, Math.floor(selected.video.videoWidth * ratio / 2));
         const height = 2 * Math.max(1, Math.floor(selected.video.videoHeight * ratio / 2));
-        const canvas = new OffscreenCanvas(width,height);
-        const context = canvas.getContext('2d',{alpha:false});
-        if (!context) throw Error('Frame scaling unavailable');
         const encoder = new VideoEncoder({
             output(chunk) {
                 if (playback !== run || chunk.byteLength > 256 * 1024 - 9) return;
@@ -100,8 +110,9 @@ async function start(message) {
             }
         });
         run.encoder = encoder;
-        encoder.configure({codec:'vp8',width,height,bitrate:1_550_000,framerate:30,latencyMode:'realtime'});
-        const reader = new MediaStreamTrackProcessor({track,maxBufferSize:2}).readable.getReader();
+        encoder.configure({codec:'vp8',width,height,bitrate:3_600_000,framerate:60,
+            latencyMode:'realtime',hardwareAcceleration:'prefer-software'});
+        const reader = new MediaStreamTrackProcessor({track,maxBufferSize:3}).readable.getReader();
         run.reader = reader;
         port.postMessage({type:'begin',id:run.id,width,height});
         run.noFrames = setTimeout(() => {
@@ -110,21 +121,15 @@ async function start(message) {
                 stop();
             }
         },2400);
-        let latest = -Infinity;
         let keyAt = -Infinity;
         while (playback === run) {
             const {value:frame,done} = await reader.read();
             if (done) break;
             try {
-                if (playback !== run || frame.timestamp - latest < 32_000 || encoder.encodeQueueSize > 1) continue;
-                context.drawImage(frame,0,0,width,height);
-                const scaled = new VideoFrame(canvas,{timestamp:frame.timestamp});
-                try {
-                    const keyFrame = frame.timestamp - keyAt >= 500_000;
-                    if (keyFrame) keyAt = frame.timestamp;
-                    latest = frame.timestamp;
-                    encoder.encode(scaled,{keyFrame});
-                } finally { scaled.close(); }
+                if (playback !== run || encoder.encodeQueueSize > 2) continue;
+                const keyFrame = frame.timestamp - keyAt >= 500_000;
+                if (keyFrame) keyAt = frame.timestamp;
+                encoder.encode(frame,{keyFrame});
             } finally { frame.close(); }
         }
         if (playback === run) throw Error('Video ended');
@@ -157,12 +162,15 @@ function connect() {
             port = undefined;
             retry = setTimeout(connect,900);
         });
-        sample();
     } catch {}
 }
 
-for (const event of ['playing','pause','ended','volumechange','loadeddata','visibilitychange']) {
-    document.addEventListener(event,sample,true);
+if (globalThis.VideoEncoder && globalThis.MediaStreamTrackProcessor) {
+    for (const event of ['playing','pause','ended','volumechange','loadeddata','visibilitychange']) {
+        document.addEventListener(event,() => {
+            if (source || event !== 'visibilitychange') sample();
+        },true);
+    }
+    window.setInterval(sample,1200);
+    sample();
 }
-window.setInterval(sample,900);
-connect();
