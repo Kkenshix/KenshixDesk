@@ -14,6 +14,8 @@ const site = /(^|\.)youtube(?:-nocookie)?\.com$/.test(hostname) ? 'youtube'
     : /(^|\.)kick\.com$/.test(hostname) ? 'kick' : 'opera';
 
 function select() {
+    const active = source?.video;
+    if (playback && active?.isConnected && !active.ended && !active.mediaKeys) return source;
     const candidates = [...document.querySelectorAll('video')];
     if (!candidates.length && performance.now() - lastShadowScan >= 4000) {
         lastShadowScan = performance.now();
@@ -47,7 +49,7 @@ function sample() {
         since = Date.now();
         stop();
     }
-    if (playback && source) {
+    if (playback && source?.video.videoWidth && source.video.videoHeight) {
         const {width,height} = transferSize(source.video);
         if (width !== playback.width || height !== playback.height) {
             void start({id:playback.id,key:source.key});

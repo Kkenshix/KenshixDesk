@@ -76,9 +76,11 @@ function choose() {
     if (foreground === undefined) return;
     if (current) {
         const data = frames.get(current.frame);
-        if (current.tab === foreground || data?.media?.key !== current.key || data.port !== current.port) {
-            stop();
+        if (current.tab !== foreground && data?.port === current.port && data.media?.key === current.key) {
+            trace(!data.media.playing ? 'paused' : current.begun ? 'capturing' : 'playing');
+            return;
         }
+        stop();
     }
     if (foreground !== null && dismissed === foreground) dismissed = undefined;
     const players = new Map();
@@ -92,19 +94,12 @@ function choose() {
     }
     const newest = [...players.values()].sort((a,b) => b.media.started - a.media.started)[0];
     if (!newest) {
-        trace(current ? 'paused' : 'no_media');
+        trace('no_media');
         return;
     }
     const {tab,frame,port,media} = newest;
-    trace(current?.begun ? 'capturing' : 'playing');
-    if (tab === foreground) {
-        stop();
-        return;
-    }
-    if (current?.port === port && current.key === media.key) return;
-    const old = current && frames.get(current.frame)?.media;
-    if (old && !old.playing && media.started <= old.started) return;
-    stop();
+    trace('playing');
+    if (tab === foreground) return;
     current = {tab,frame,port,key:media.key,id:crypto.randomUUID(),begun:false};
     try { port.postMessage({type:'start',id:current.id,key:current.key}); }
     catch { frames.delete(frame); stop(); }
