@@ -23,7 +23,7 @@ use windows::{
     core::{Interface, PWSTR},
 };
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct Level {
     id: String,
     label: String,
@@ -50,7 +50,7 @@ impl Drop for Process {
     }
 }
 
-fn process_image(pid: u32) -> Option<String> {
+pub(crate) fn process_image(pid: u32) -> Option<String> {
     let mut buffer = vec![0u16; 32768];
     let mut length = buffer.len() as u32;
     // SAFETY: The writable UTF-16 buffer holds the advertised number of code units.
@@ -173,16 +173,46 @@ fn endpoint_level(device: &IMMDevice, id: &str, label: &str) -> Result<Level> {
 }
 
 pub(crate) fn mixer() -> Result<Vec<Level>> {
+    levels(true)
+}
+
+pub(crate) fn media_levels() -> Result<Vec<Level>> {
+    levels(false)
+}
+
+pub(crate) fn media_level<'a>(levels: &'a [Level], source: &str) -> Option<&'a Level> {
+    let source = source.to_ascii_lowercase();
+    let name = source.rsplit(['\\', '/']).next().unwrap_or(&source);
+    let mut matching = levels.iter().filter(|level| {
+        level.id.starts_with("app:") && {
+            let label = level.label.to_ascii_lowercase();
+            !label.is_empty()
+                && (name == label
+                    || name.strip_suffix(".exe") == Some(label.as_str())
+                    || name.split(['.', '_', '!']).any(|part| part == label))
+        }
+    });
+    if let Some(first) = matching.next()
+        && matching.next().is_none()
+    {
+        return Some(first);
+    }
+    levels.iter().find(|level| level.id == "master")
+}
+
+fn levels(include_capture: bool) -> Result<Vec<Level>> {
     let (_com, devices) = devices()?;
     // SAFETY: The enumerator is used synchronously inside the live apartment.
     let (output, capture) = unsafe {
         (
             devices.GetDefaultAudioEndpoint(eRender, eConsole)?,
-            devices.GetDefaultAudioEndpoint(eCapture, eConsole),
+            include_capture
+                .then(|| devices.GetDefaultAudioEndpoint(eCapture, eConsole).ok())
+                .flatten(),
         )
     };
     let mut levels = vec![endpoint_level(&output, "master", "Genel Windows sesi")?];
-    if let Ok(capture) = capture
+    if let Some(capture) = capture
         && let Ok(input) = endpoint_level(&capture, "microphone", "Varsayılan mikrofon")
     {
         levels.push(input);

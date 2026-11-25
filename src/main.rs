@@ -13,6 +13,8 @@ mod gpu;
 #[cfg(windows)]
 mod layout;
 #[cfg(windows)]
+mod media;
+#[cfg(windows)]
 mod metrics;
 #[cfg(windows)]
 mod obs;
@@ -28,6 +30,8 @@ mod store;
 mod tray;
 #[cfg(windows)]
 mod updater;
+#[cfg(windows)]
+mod window_control;
 #[cfg(windows)]
 mod windows_host;
 

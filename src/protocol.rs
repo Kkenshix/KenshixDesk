@@ -74,7 +74,24 @@ pub(crate) enum Request {
         token: String,
     },
     Snapshot,
+    ObsControls,
+    ChangeObs {
+        operation: Uuid,
+        target: crate::obs::LiveControl,
+    },
     Metrics,
+    Media,
+    Windows,
+    ControlWindow {
+        operation: Uuid,
+        window: String,
+        command: crate::window_control::Command,
+    },
+    ControlMedia {
+        operation: Uuid,
+        session: String,
+        command: crate::media::Command,
+    },
     UpdateStatus,
     ObsStatus,
     Save {

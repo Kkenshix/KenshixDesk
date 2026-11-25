@@ -454,6 +454,12 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
             let status = crate::routine::status(db, operation)?;
             json!({"type":"action_result","operation":operation,"status":status})
         }
+        Request::ObsControls => crate::obs::controls(db)
+            .unwrap_or_else(|_| json!({"type":"error","code":"obs_unavailable"})),
+        Request::ChangeObs {
+            operation: id,
+            target,
+        } => operation(db, id, |db| crate::obs::live_control(db, target))?,
         Request::ObsStatus => crate::obs::status(db)
             .unwrap_or_else(|_| json!({"type":"error","code":"obs_unavailable"})),
         Request::UpdateStatus => {
@@ -464,6 +470,18 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
             json!({"type":"update_status","state":state})
         }
         Request::Metrics => json!({"type":"metrics","measurements":crate::metrics::read()}),
+        Request::Windows => json!({"type":"windows","windows":crate::window_control::list()?}),
+        Request::ControlWindow {
+            operation: id,
+            window,
+            command,
+        } => operation(db, id, |_| crate::window_control::execute(&window, command))?,
+        Request::Media => json!({"type":"media","sessions":crate::media::snapshot()?}),
+        Request::ControlMedia {
+            operation: id,
+            session,
+            command,
+        } => operation(db, id, |_| crate::media::control(&session, command))?,
         Request::Mixer => json!({"type":"mixer","levels":crate::audio::mixer()?}),
         Request::SetVolume {
             operation: id,

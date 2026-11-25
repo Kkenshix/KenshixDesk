@@ -83,8 +83,15 @@ impl Obs {
     }
 
     fn request(&mut self, command: &str) -> Result<Value> {
+        self.request_data(command, json!({}))
+    }
+
+    fn request_data(&mut self, command: &str, data: Value) -> Result<Value> {
         let request_id = Uuid::new_v4().to_string();
-        self.send(6, json!({"requestType":command,"requestId":request_id}))?;
+        self.send(
+            6,
+            json!({"requestType":command,"requestId":request_id,"requestData":data}),
+        )?;
         let response = self.receive(7)?;
         ensure!(
             response["requestId"] == request_id && response["requestType"] == command,
@@ -120,6 +127,82 @@ pub(crate) fn recording(db: &Connection) -> Result<bool> {
     Obs::connect(db)?.request("GetRecordStatus")?["outputActive"]
         .as_bool()
         .context("OBS kayıt durumu yok")
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum LiveControl {
+    Scene {
+        name: String,
+    },
+    Microphone {
+        name: String,
+        muted: bool,
+    },
+    Source {
+        scene: String,
+        item: i64,
+        visible: bool,
+    },
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().count() <= 160 && !name.chars().any(char::is_control)
+}
+
+pub(crate) fn controls(db: &Connection) -> Result<Value> {
+    let mut obs = Obs::connect(db)?;
+    let scene_list = obs.request("GetSceneList")?;
+    let current = scene_list["currentProgramSceneName"].as_str().unwrap_or("");
+    let scenes: Vec<_> = scene_list["scenes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|scene| scene["sceneName"].as_str().filter(|name| valid_name(name)))
+        .take(64)
+        .collect();
+    let inputs = obs.request("GetSpecialInputs").unwrap_or_default();
+    let mut microphones = Vec::new();
+    for key in ["mic1", "mic2", "mic3", "mic4"] {
+        if let Some(name) = inputs[key].as_str().filter(|name| valid_name(name))
+            && let Ok(state) = obs.request_data("GetInputMute", json!({"inputName":name}))
+            && let Some(muted) = state["inputMuted"].as_bool()
+        {
+            microphones.push(json!({"name":name,"muted":muted}));
+        }
+    }
+    let items = obs
+        .request_data("GetSceneItemList", json!({"sceneName":current}))
+        .unwrap_or_default();
+    let sources: Vec<_> = items["sceneItems"].as_array().into_iter().flatten().filter_map(|record| {
+        let name = record["sourceName"].as_str().filter(|name| valid_name(name))?;
+        Some(json!({"name":name,"id":record["sceneItemId"].as_i64()?,"visible":record["sceneItemEnabled"].as_bool()?}))
+    }).take(64).collect();
+    Ok(
+        json!({"type":"obs_controls","current":current,"scenes":scenes,"microphones":microphones,"sources":sources}),
+    )
+}
+
+pub(crate) fn live_control(db: &Connection, action: LiveControl) -> Result<()> {
+    let (command, data) = match action {
+        LiveControl::Scene { name } if valid_name(&name) => {
+            ("SetCurrentProgramScene", json!({"sceneName":name}))
+        }
+        LiveControl::Microphone { name, muted } if valid_name(&name) => {
+            ("SetInputMute", json!({"inputName":name,"inputMuted":muted}))
+        }
+        LiveControl::Source {
+            scene,
+            item,
+            visible,
+        } if valid_name(&scene) && item >= 0 => (
+            "SetSceneItemEnabled",
+            json!({"sceneName":scene,"sceneItemId":item,"sceneItemEnabled":visible}),
+        ),
+        _ => anyhow::bail!("geçersiz OBS işlemi"),
+    };
+    Obs::connect(db)?.request_data(command, data)?;
+    Ok(())
 }
 
 pub(crate) fn status(db: &Connection) -> Result<Value> {

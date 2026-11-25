@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import org.json.JSONObject
+import java.util.UUID
 
 internal class ObsView(activity: Activity, private val link: DeckLink, exit: () -> Unit) : LinearLayout(activity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -37,6 +38,12 @@ internal class ObsView(activity: Activity, private val link: DeckLink, exit: () 
             setPadding(pad, pad, pad, pad)
             background = DeckUi.shape(activity)
         })
+        detail.addView(LinearLayout(activity).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(DeckUi.action(activity, "Sahne değiştir") { chooseControls("scenes") })
+            addView(DeckUi.action(activity, "Mikrofonlar") { chooseControls("microphones") })
+            addView(DeckUi.action(activity, "Görüntü kaynakları") { chooseControls("sources") })
+        }, LayoutParams(-1, -2).apply { bottomMargin = DeckUi.dp(activity, 10) })
         titles.forEachIndexed { index, title ->
             detail.addView(LinearLayout(activity).apply {
                 gravity = Gravity.CENTER_VERTICAL
@@ -49,6 +56,54 @@ internal class ObsView(activity: Activity, private val link: DeckLink, exit: () 
             }, LayoutParams(-1, -2).apply { bottomMargin = DeckUi.dp(activity, 8) })
         }
         addView(ScrollView(activity).apply { addView(detail) }, LayoutParams(-1, 0, 1f))
+    }
+
+    private fun chooseControls(kind: String) {
+        link.request(message("obs_controls")) { result ->
+            handler.post {
+                if (!active) return@post
+                val values = result?.optJSONArray(kind)
+                if (values == null || values.length() == 0) {
+                    showResult("OBS’de bu denetim için öğe bulunamadı")
+                    return@post
+                }
+                val choices = (0 until values.length()).map { i ->
+                    if (kind == "scenes") {
+                        val name = values.optString(i)
+                        ("$name${if (name == result.optString("current")) " · Yayında" else ""}") to
+                            JSONObject().put("action","scene").put("name",name)
+                    } else {
+                        val value = values.getJSONObject(i)
+                        val name = value.optString("name")
+                        if (kind == "microphones") {
+                            val muted = value.optBoolean("muted")
+                            ("$name · ${if (muted) "Sesi aç" else "Sessize al"}") to
+                                JSONObject().put("action","microphone").put("name",name).put("muted",!muted)
+                        } else {
+                            val visible = value.optBoolean("visible")
+                            ("$name · ${if (visible) "Gizle" else "Göster"}") to
+                                JSONObject().put("action","source").put("scene",result.optString("current"))
+                                    .put("item",value.optLong("id")).put("visible",!visible)
+                        }
+                    }
+                }
+                val title = when (kind) { "scenes" -> "Sahne"; "microphones" -> "Mikrofon"; else -> "Görüntü kaynağı" }
+                DeckUi.choices(DeckUi.dialog(context).setTitle(title), choices.map { it.first }) {
+                    val id = UUID.randomUUID().toString()
+                    link.request(message("change_obs").put("operation",id).put("target",choices[it].second)) { reply ->
+                        handler.post {
+                            if (active && (reply?.optString("operation") != id || reply.optString("status") != "ok")) {
+                                showResult("OBS işlemi tamamlanmadı")
+                            }
+                        }
+                    }
+                }.setNegativeButton("Kapat",null).showDeck()
+            }
+        }
+    }
+
+    private fun showResult(message: String) {
+        DeckUi.dialog(context).setMessage(message).setPositiveButton("Kapat",null).showDeck()
     }
 
     private fun render(response: JSONObject?) {

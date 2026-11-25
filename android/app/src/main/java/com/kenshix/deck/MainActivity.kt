@@ -75,6 +75,9 @@ class MainActivity : Activity() {
     private var mixer = false
     private var obs = false
     private var performance = false
+    private var showingVideo = false
+    private var showingWindows = false
+    private var mediaGesture = false
     private var dimmed = false
     private var standby = false
     private lateinit var header: View
@@ -243,8 +246,15 @@ class MainActivity : Activity() {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             downX = event.x
             downY = event.y
-            eatingGesture = dimmed || standby
-            wake()
+            val clock = body.getChildAt(0) as? StandbyView
+            mediaGesture = standby && clock?.ownsMediaTouch(event.rawX, event.rawY) == true
+            eatingGesture = !mediaGesture && (dimmed || standby)
+            if (!mediaGesture) wake()
+        }
+        if (mediaGesture) {
+            val delivered = super.dispatchTouchEvent(event)
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) mediaGesture = false
+            return delivered
         }
         if (eatingGesture) {
             if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
@@ -253,7 +263,7 @@ class MainActivity : Activity() {
             return true
         }
         if (event.actionMasked == MotionEvent.ACTION_UP && connected() && !mixer && !obs &&
-            !performance && !editing && downY >= header.bottom) {
+            !performance && !showingVideo && !showingWindows && !editing && downY >= header.bottom) {
             val horizontal = event.x - downX
             if (kotlin.math.abs(horizontal) > dp(88) && kotlin.math.abs(event.y - downY) < dp(52)) {
                 val panels = layout().items()
@@ -347,6 +357,11 @@ class MainActivity : Activity() {
             setOnClickListener { enterStandby() }
         }
         top.addView(clockView, LinearLayout.LayoutParams(-2, -2))
+        top.addView(button("Video") {
+            showingVideo = !showingVideo
+            showingWindows = false
+            renderBody()
+        }.apply { contentDescription = "Video sayfası" }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(6) })
         val menu = button("Ayarlar") { openMenu() }.apply {
             contentDescription = "Ayarlar"
             DeckUi.touch(this, surface, 16)
@@ -375,6 +390,8 @@ class MainActivity : Activity() {
         animatedTiles.clear()
         val destination = when {
             standby -> "standby"
+            showingVideo -> "video"
+            showingWindows -> "windows"
             performance && connected() -> "performance"
             obs && connected() -> "obs"
             mixer && connected() -> "mixer"
@@ -402,6 +419,14 @@ class MainActivity : Activity() {
         headerDivider.visibility = header.visibility
         if (standby) {
             if (body.getChildAt(0) !is StandbyView) display(StandbyView(this, link))
+            return
+        }
+        if (showingVideo) {
+            if (body.getChildAt(0) !is VideoPage) display(VideoPage(this, link) { showingVideo = false; renderBody() })
+            return
+        }
+        if (showingWindows) {
+            if (body.getChildAt(0) !is WindowPage) display(WindowPage(this, link) { showingWindows = false; renderBody() })
             return
         }
         if (performance && connected()) {
@@ -534,10 +559,14 @@ class MainActivity : Activity() {
             options += "Yeni profil" to ::addProfile
             if (layout().profileFor(currentPanel) != null) options += "Yeni sayfa" to ::addPage
             options += "Ad değiştir / klasör / sil" to ::managePanel
+            options += "Video" to { showingVideo = true; showingWindows = false; renderBody() }
+            options += "Windows pencereleri" to { showingWindows = true; showingVideo = false; renderBody() }
             options += "PC Performansı" to {
                 mixer = false
                 obs = false
                 performance = true
+                showingVideo = false
+                showingWindows = false
                 renderBody()
             }
         }
@@ -624,6 +653,8 @@ class MainActivity : Activity() {
         val model = layout()
         val panel = model.item(id)
         currentPanel = panel?.id
+        showingVideo = false
+        showingWindows = false
         preferences.edit().putString("current_panel", currentPanel).apply {
             val profile = model.profileFor(currentPanel)
             if (profile != null) putString("profile_page_${profile.id}", currentPanel)

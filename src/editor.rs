@@ -93,6 +93,9 @@ pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> 
                 logo,
                 panel: None,
                 selected: None,
+                selection: std::collections::HashSet::new(),
+                undo: Vec::new(),
+                redo: Vec::new(),
                 rename: None,
                 message: String::new(),
                 drag: None,
@@ -113,6 +116,9 @@ struct Editor {
     logo: egui::TextureHandle,
     panel: Option<Uuid>,
     selected: Option<Uuid>,
+    selection: std::collections::HashSet<Uuid>,
+    undo: Vec<Deck>,
+    redo: Vec<Deck>,
     rename: Option<(Uuid, String)>,
     message: String,
     drag: Option<Uuid>,
@@ -139,9 +145,34 @@ impl Editor {
                 if let Ok(deck) = store::deck(&self.db) {
                     self.deck = deck;
                     self.dirty = false;
+                    self.undo.clear();
+                    self.redo.clear();
                 }
             }
             Err(error) => self.message = error.to_string(),
+        }
+    }
+
+    fn history(&mut self, redo: bool) {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        if let Some(mut deck) = from.pop() {
+            deck.revision = self.deck.revision;
+            to.push(std::mem::replace(&mut self.deck, deck));
+            self.selected = self
+                .selected
+                .filter(|id| self.deck.buttons.iter().any(|button| button.id == *id));
+            self.selection.clear();
+            self.dirty = true;
+            self.message = if redo {
+                "Değişiklik yinelendi"
+            } else {
+                "Değişiklik geri alındı"
+            }
+            .into();
         }
     }
 
@@ -294,6 +325,8 @@ impl Editor {
                 let mut row_height: f32 = 0.0;
                 let mut column_x = 0.0;
                 let mut drop_onto = None;
+                let mut guide_tiles = Vec::new();
+                let mut active_guide = None;
                 for tile in tiles {
                     let placement = if let Tile::Button(button) = &tile {
                         Some(self.placement(button.id))
@@ -345,6 +378,7 @@ impl Editor {
                         }
                         Tile::Button(button) => {
                             let mut placement = placement.expect("button placement");
+                            guide_tiles.push((button.id, rect));
                             let handle_size =
                                 17.0_f32.min(rect.width() / 2.0).min(rect.height() / 2.0);
                             let resize =
@@ -364,7 +398,8 @@ impl Editor {
                                     .as_deref()
                                     .and_then(parse_color)
                                     .unwrap_or(PANEL),
-                                self.selected == Some(button.id),
+                                self.selected == Some(button.id)
+                                    || self.selection.contains(&button.id),
                             );
                             if let Some(id) = &button.art {
                                 self.draw_art(ui, id, rect);
@@ -379,7 +414,37 @@ impl Editor {
                                 );
                             }
                             if response.clicked() {
+                                if ui.input(|input| input.modifiers.ctrl) {
+                                    if !self.selection.remove(&button.id) {
+                                        self.selection.insert(button.id);
+                                    }
+                                    if let Some(previous) =
+                                        self.selected.filter(|id| *id != button.id)
+                                    {
+                                        self.selection.insert(previous);
+                                    }
+                                } else {
+                                    self.selection.clear();
+                                }
                                 self.selected = Some(button.id);
+                            }
+                            if let Some(pointer) = ui.input(|input| input.pointer.latest_pos()) {
+                                if response.dragged() {
+                                    active_guide = Some((
+                                        button.id,
+                                        Rect::from_center_size(pointer, rect.size()),
+                                        false,
+                                    ));
+                                } else if handle.dragged() {
+                                    active_guide = Some((
+                                        button.id,
+                                        Rect::from_min_max(
+                                            rect.min,
+                                            pointer.max(rect.min + Vec2::splat(12.0)),
+                                        ),
+                                        true,
+                                    ));
+                                }
                             }
                             if response.drag_started() {
                                 self.drag = Some(button.id);
@@ -431,6 +496,37 @@ impl Editor {
                                 .clicked()
                             {
                                 self.create_button();
+                            }
+                        }
+                    }
+                }
+                if let Some((id, rect, resizing)) = active_guide {
+                    let painter = ui.painter();
+                    let guide = egui::Stroke::new(1.0_f32, Color32::from_gray(165));
+                    let ghost = egui::Stroke::new(1.0_f32, ACCENT);
+                    painter.rect_stroke(rect, 7, ghost, egui::StrokeKind::Outside);
+                    let x_values = if resizing {
+                        [rect.max.x; 3]
+                    } else {
+                        [rect.min.x, rect.center().x, rect.max.x]
+                    };
+                    let y_values = if resizing {
+                        [rect.max.y; 3]
+                    } else {
+                        [rect.min.y, rect.center().y, rect.max.y]
+                    };
+                    for (other, edge) in &guide_tiles {
+                        if *other == id {
+                            continue;
+                        }
+                        for x in [edge.min.x, edge.center().x, edge.max.x] {
+                            if x_values.iter().any(|value| (x - value).abs() < 5.0) {
+                                painter.vline(x, origin.y..=origin.y + row_y + row_height, guide);
+                            }
+                        }
+                        for y in [edge.min.y, edge.center().y, edge.max.y] {
+                            if y_values.iter().any(|value| (y - value).abs() < 5.0) {
+                                painter.hline(origin.x..=origin.x + width, y, guide);
                             }
                         }
                     }
@@ -674,10 +770,30 @@ impl eframe::App for Editor {
             && next.revision != self.deck.revision
         {
             self.deck = next;
+            self.undo.clear();
+            self.redo.clear();
             if self.panel.is_some() && self.panel_name(self.panel) == "Ana panel" {
                 self.panel = None;
             }
         }
+        let (undo, redo) = ctx.input_mut(|input| {
+            (
+                input.consume_key(
+                    egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT),
+                    egui::Key::Z,
+                ),
+                input.consume_key(egui::Modifiers::CTRL, egui::Key::Y),
+            )
+        });
+        if undo || redo {
+            self.history(true);
+        } else if !ctx.wants_keyboard_input()
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
+        {
+            self.history(false);
+        }
+        let before = self.deck.clone();
+        let stack_length = (self.undo.len(), self.redo.len());
         if self.dirty
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
         {
@@ -710,6 +826,19 @@ impl eframe::App for Editor {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Panel").color(MUTED));
+                if ui
+                    .add_enabled(!self.undo.is_empty(), egui::Button::new("Geri al"))
+                    .clicked()
+                {
+                    self.history(false);
+                }
+                if ui
+                    .add_enabled(!self.redo.is_empty(), egui::Button::new("Yinele"))
+                    .clicked()
+                {
+                    self.history(true);
+                }
+
                 egui::ComboBox::from_id_salt("panels")
                     .selected_text(self.panel_name(self.panel))
                     .show_ui(ui, |ui| {
@@ -780,6 +909,26 @@ impl eframe::App for Editor {
                 .show(ctx, |ui| {
                     ui.heading("Buton ayarları");
                     ui.separator();
+                    if self.selection.len() > 1 {
+                        ui.label(format!("{} buton seçildi", self.selection.len()));
+                        if ui.button("Seçilenleri aynı boyuta getir").clicked()
+                            && let Some(id) = self.selected
+                        {
+                            let size = self.placement(id);
+                            let selected: Vec<_> = self.selection.iter().copied().collect();
+                            for id in selected {
+                                let mut placement = self.placement(id);
+                                placement.width_px = size.width_px;
+                                placement.height_px = size.height_px;
+                                placement.span = size.span;
+                                self.place(id, placement);
+                            }
+                        }
+                        if ui.button("Seçimi temizle").clicked() {
+                            self.selection.clear();
+                        }
+                        ui.separator();
+                    }
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if let Some(id) = self.selected {
                             self.inspect_button(ui, id);
@@ -803,6 +952,17 @@ impl eframe::App for Editor {
                 egui::ScrollArea::vertical().show(ui, |ui| self.preview(ui));
             }
         });
+        if stack_length == (self.undo.len(), self.redo.len()) {
+            let mut before = before;
+            before.revision = self.deck.revision;
+            if serde_json::to_vec(&before).ok() != serde_json::to_vec(&self.deck).ok() {
+                self.undo.push(before);
+                if self.undo.len() > 32 {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+            }
+        }
     }
 }
 

@@ -21,6 +21,7 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
     private val gpu = Gauge(context, "GPU")
     private val ram = Gauge(context, "RAM")
     private val instruments = LinearLayout(context)
+    private val media = MediaControls(context, link)
     private val content = LinearLayout(context)
     private val local = Locale.forLanguageTag("tr-TR")
     private val moment = DateFormat.getTimeInstance(DateFormat.SHORT, local)
@@ -76,7 +77,7 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
         val brand = LinearLayout(context).apply {
             orientation = VERTICAL
             gravity = Gravity.CENTER
-            addView(DeckUi.dragon(context), LayoutParams(DeckUi.dp(context, 62), DeckUi.dp(context, 62)))
+            addView(DeckUi.dragon(context), LayoutParams(DeckUi.dp(context, 52), DeckUi.dp(context, 52)))
             addView(DeckUi.label(context, "KenshixDeck", 17, DeckUi.text, 700).apply {
                 gravity = Gravity.CENTER
             }, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 7) })
@@ -104,11 +105,14 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
                 marginEnd = DeckUi.dp(context, 5)
             })
         }
-        content.addView(instruments, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 22) })
-        content.addView(status, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 14) })
+        content.addView(instruments, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 13) })
+        content.addView(status, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 8) })
+        content.addView(media, LayoutParams(DeckUi.dp(context, 480), -2).apply { topMargin = DeckUi.dp(context, 14) })
         addView(content, LayoutParams(-2, -2))
         showMetrics(null)
     }
+
+    fun ownsMediaTouch(x: Float, y: Float) = media.ownsTouch(x, y)
 
     private fun showMetrics(report: JSONObject?) {
         cpu.render(report?.optInt("cpu_percent", -1))
