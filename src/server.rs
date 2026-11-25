@@ -92,7 +92,7 @@ pub(crate) async fn start() -> Result<()> {
         match argument.as_str() {
             "--pair" => pair = true,
             "--editor" => editor = true,
-            "--buttons" | "--add-button" | "--remove-button" => {
+            "--buttons" | "--add-button" | "--remove-button" | "--set-button-media" => {
                 ensure!(
                     edit.is_none(),
                     "her çağrıda bir düzenleme işlemi kullanılabilir"

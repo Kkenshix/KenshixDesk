@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import kotlin.math.roundToInt
 import android.graphics.Color
 import android.os.BatteryManager
 import android.os.Bundle
@@ -59,6 +60,10 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var statusView: TextView
     private lateinit var clockView: TextView
+    private lateinit var profilesView: LinearLayout
+    private var profileHeaderKey = ""
+    private var transitionSide = 0
+    private var pageBadge: View? = null
     private lateinit var body: FrameLayout
     private lateinit var battery: BroadcastReceiver
     private var batteryText = ""
@@ -83,7 +88,7 @@ class MainActivity : Activity() {
     private var lastDestination: String? = null
     private var noticeView: TextView? = null
     private var activeRoutine: String? = null
-    private val animatedTiles = mutableListOf<ImageView>()
+    private val animatedTiles = mutableListOf<MediaTile>()
     private val preferences by lazy { getSharedPreferences("deck", MODE_PRIVATE) }
     private val dim = Runnable {
         if (!inactive) {
@@ -219,18 +224,21 @@ class MainActivity : Activity() {
             if (kotlin.math.abs(horizontal) > dp(88) && kotlin.math.abs(event.y - downY) < dp(52)) {
                 val panels = layout().items()
                 val item = panels.firstOrNull { it.id == currentPanel }
-                val peers = when (item?.kind) {
-                    "page" -> panels.filter { it.kind == "page" && it.parent == item.parent }.map { it.id }
-                    "folder" -> panels.filter { it.kind == "folder" && it.parent == item.parent }.map { it.id }
-                    else -> listOf(null) + panels.filter { it.kind == "profile" }.map { it.id }
-                }
-                val index = peers.indexOf(currentPanel) + if (horizontal < 0) 1 else -1
-                if (index in peers.indices) {
+                val direction = if (horizontal > 0) 1 else -1
+                val profiles = listOf<String?>(null) + panels.filter { it.kind == "profile" }.map { it.id }
+                val pages = panels.filter { it.kind == "page" && it.parent == item?.parent }.map { it.id }
+                val pageIndex = if (item?.kind == "page") pages.indexOf(item.id) + direction else -1
+                val activeProfile = layout().profileFor(currentPanel)?.id
+                val profileIndex = profiles.indexOf(activeProfile) + direction
+                val movingPage = pageIndex in pages.indices
+                val target = if (movingPage) pages[pageIndex] else profiles.getOrNull(profileIndex)
+                if (movingPage || profileIndex in profiles.indices) {
                     val cancel = MotionEvent.obtain(event)
                     cancel.action = MotionEvent.ACTION_CANCEL
                     super.dispatchTouchEvent(cancel)
                     cancel.recycle()
-                    selectPanel(peers[index])
+                    transitionSide = direction
+                    if (movingPage) selectPanel(target, badge = true) else openProfile(target, badge = true)
                     return true
                 }
             }
@@ -253,7 +261,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateAnimations() {
-        animatedTiles.forEach { buttonArt.update(it) { !dimmed && !inactive } }
+        animatedTiles.forEach(MediaTile::update)
     }
 
     private fun brightness(level: Float) {
@@ -275,7 +283,15 @@ class MainActivity : Activity() {
         }
         top.addView(image, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(12) })
         val brand = column().apply {
-            addView(label("KenshixDeck", 18, text, true).apply { letterSpacing = -.03f })
+            addView(row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label("KenshixDeck", 18, text, true).apply { letterSpacing = -.03f })
+                profilesView = row().apply { gravity = Gravity.CENTER_VERTICAL }
+                addView(android.widget.HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(profilesView)
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+            })
             statusView = label(status, 11, accent).apply { setPadding(0, dp(5), 0, 0) }
             updateConnection()
             addView(statusView)
@@ -317,10 +333,21 @@ class MainActivity : Activity() {
         }
         val animate = lastDestination != destination
         lastDestination = destination
+        renderProfileStrip()
         fun display(view: View) {
+            val previous = body.getChildAt(0) as? ScrollView
+            val keepScroll = !animate && previous != null && view is ScrollView
+            val offset = if (keepScroll) previous?.scrollY ?: 0 else 0
             body.removeAllViews()
             body.addView(view, FrameLayout.LayoutParams(-1, -1))
-            if (animate) DeckUi.appear(view)
+            if (keepScroll) view.post { view.scrollTo(0, offset) }
+            if (animate && transitionSide != 0 && android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                view.translationX = dp(32).toFloat() * transitionSide
+                view.alpha = 0.6f
+                view.animate().translationX(0f).alpha(1f).setDuration(370)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator(1.45f)).start()
+            } else if (animate) DeckUi.appear(view)
+            transitionSide = 0
         }
         header.visibility = if (standby) View.GONE else View.VISIBLE
         if (standby) {
@@ -373,29 +400,38 @@ class MainActivity : Activity() {
                         ellipsize = android.text.TextUtils.TruncateAt.END
                         setPadding(dp(10), 0, dp(6), 0)
                     }, LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(button("Paneller") { choosePanel() })
+                    addView(button(if (selection.kind == "profile") "Sayfalar" else "Panel seç") { choosePanel() })
+                    if (selection.kind == "profile") addView(button("+ Sayfa") { addPage() })
                 }
                 content.addView(path)
             }
-            val columns = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 5 else 3
+            val columns = 5
+            val gap = dp(8)
+            val width = (resources.displayMetrics.widthPixels - root.paddingLeft - root.paddingRight - dp(28)).coerceAtLeast(500)
+            val scale = resources.displayMetrics.widthPixels / 1600f
+            val cell = (width - columns * gap) / columns
             var gridRow = row()
-            var used = columns
-            fun place(tile: View, span: Int) {
-                if (used + span > columns) {
-                    gridRow = row().apply { weightSum = columns.toFloat() }
+            var used = width
+            fun place(tile: View, span: Int, widthPx: Int? = null, heightPx: Int? = null) {
+                val tileWidth = (widthPx?.let { (it * scale).roundToInt() } ?: (cell * span + gap * (span - 1)))
+                    .coerceAtMost(width - gap)
+                val tileHeight = heightPx?.let { (it * scale).roundToInt() } ?: dp(112)
+                if (used + tileWidth + gap > width) {
+                    gridRow = row()
                     content.addView(gridRow)
                     used = 0
                 }
-                gridRow.addView(tile, LinearLayout.LayoutParams(0, dp(112), span.toFloat()).apply {
-                    marginEnd = dp(8)
-                    bottomMargin = dp(8)
+                gridRow.addView(tile, LinearLayout.LayoutParams(tileWidth, tileHeight).apply {
+                    marginEnd = gap
+                    bottomMargin = gap
                 })
-                used += span
+                used += tileWidth + gap
             }
 
             layout.items().filter { it.parent == currentPanel && it.kind != "profile" }.forEach { node ->
                 place(panelTile(node.name, if (node.kind == "page") "Sayfa" else "Klasör", null) {
-                    selectPanel(node.id)
+                    transitionSide = 1
+                    selectPanel(node.id, badge = true)
                 }, 1)
             }
             val buttons = deck.optJSONArray("buttons") ?: JSONArray()
@@ -408,18 +444,12 @@ class MainActivity : Activity() {
                     if (editing) editButton(record) else execute(it, record)
                 }
                 record.optString("art").takeIf { it.isNotEmpty() }?.let { image ->
-                    val picture = ImageView(this).apply {
-                        scaleType = ImageView.ScaleType.CENTER_CROP
-                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                        clipToOutline = true
-                        background = DeckUi.shape(context, surface, 8)
-                    }
+                    val picture = buttonArt.tile(this, image) { !dimmed && !inactive }
                     tile.removeViewAt(0)
                     tile.addView(picture, 0, LinearLayout.LayoutParams(-1, 0, 1f).apply { bottomMargin = dp(5) })
                     animatedTiles.add(picture)
-                    buttonArt.show(picture, image) { !dimmed && !inactive }
                 }
-                place(tile, layout.spanFor(id))
+                place(tile, layout.spanFor(id), layout.widthFor(id), layout.heightFor(id))
             }
             place(create, 1)
         } else {
@@ -449,8 +479,10 @@ class MainActivity : Activity() {
                 performance = false
                 renderBody()
             }
-            options += "Profiller ve paneller" to ::choosePanel
-            options += "Panel düzeni" to ::managePanel
+            options += "Profil / sayfa seç" to ::choosePanel
+            options += "Yeni profil" to ::addProfile
+            if (layout().profileFor(currentPanel) != null) options += "Yeni sayfa" to ::addPage
+            options += "Ad değiştir / klasör / sil" to ::managePanel
             options += "PC Performansı" to {
                 mixer = false
                 obs = false
@@ -492,13 +524,104 @@ class MainActivity : Activity() {
         } else show(null)
     }
 
-    private fun selectPanel(id: String?) {
-        currentPanel = layout().item(id)?.id
-        preferences.edit().putString("current_panel", currentPanel).apply()
+    private fun renderProfileStrip() {
+        if (!::profilesView.isInitialized) return
+        val model = layout()
+        val profiles = listOf(Panel("", "Ana panel", null, "profile")) + model.items().filter { it.kind == "profile" }
+        val active = model.profileFor(currentPanel)?.id.orEmpty()
+        val key = profiles.joinToString("|") { it.id + it.name } + ":$active"
+        if (key == profileHeaderKey) return
+        val animate = profileHeaderKey.isNotEmpty()
+        profileHeaderKey = key
+        profilesView.removeAllViews()
+        var selected: View? = null
+        for (profile in profiles.takeIf { it.size > 1 }.orEmpty()) {
+            val highlighted = profile.id == active
+            val tab = DeckUi.label(this, profile.name, 13, if (highlighted) accent else muted, if (highlighted) 700 else 500).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = dp(220)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                if (highlighted) {
+                    background = DeckUi.shape(context, DeckUi.accentPanel, 14, Color.TRANSPARENT)
+                    if (animate) {
+                        alpha = .52f
+                        this.animate().alpha(1f).setDuration(430).start()
+                    }
+                }
+                setOnClickListener { openProfile(profile.id.ifEmpty { null }, badge = true) }
+            }
+            profilesView.addView(tab)
+            if (highlighted) selected = tab
+        }
+        selected?.let { tab ->
+            profilesView.post {
+                (profilesView.parent as? android.widget.HorizontalScrollView)?.smoothScrollTo((tab.left - dp(20)).coerceAtLeast(0), 0)
+            }
+        }
+    }
+
+    private fun openProfile(id: String?, badge: Boolean) {
+        val model = layout()
+        if (id == null) { selectPanel(null, badge); return }
+        val remembered = preferences.getString("profile_page_$id", null)
+        val next = remembered?.takeIf { model.profileFor(it)?.id == id } ?: id
+        selectPanel(next, badge)
+    }
+
+    private fun selectPanel(id: String?, badge: Boolean = false) {
+        val model = layout()
+        val panel = model.item(id)
+        currentPanel = panel?.id
+        preferences.edit().putString("current_panel", currentPanel).apply {
+            val profile = model.profileFor(currentPanel)
+            if (profile != null) putString("profile_page_${profile.id}", currentPanel)
+        }.apply()
         mixer = false
         obs = false
         performance = false
         renderBody()
+        if (badge) showPageName(panel?.name ?: "Ana panel")
+    }
+
+    private fun showPageName(name: String) {
+        pageBadge?.let(body::removeView)
+        val badge = label(name, 16, text, true).apply {
+            setPadding(dp(19), dp(12), dp(19), dp(12))
+            background = DeckUi.shape(context, DeckUi.accentPanel, 18, Color.TRANSPARENT)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            alpha = 0f
+        }
+        pageBadge = badge
+        body.addView(badge, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(24) })
+        badge.animate().alpha(1f).setDuration(170).start()
+        handler.postDelayed({
+            if (pageBadge === badge) {
+                badge.animate().alpha(0f).setDuration(240).withEndAction {
+                    body.removeView(badge)
+                    if (pageBadge === badge) pageBadge = null
+                }.start()
+            }
+        }, 760)
+    }
+
+    private fun addProfile() {
+        val model = layout()
+        val revision = deck.getLong("revision")
+        panelName("Yeni profil", null) { name ->
+            val id = model.add(name, null, "profile")
+            savePanel(revision, model) { selectPanel(id, true) }
+        }
+    }
+
+    private fun addPage() {
+        val model = layout()
+        val profile = model.profileFor(currentPanel) ?: return
+        val revision = deck.getLong("revision")
+        panelName("${profile.name} · Yeni sayfa", null) { name ->
+            val id = model.add(name, profile.id, "page")
+            savePanel(revision, model) { selectPanel(id, true) }
+        }
     }
 
     private fun choosePanel() {
@@ -509,7 +632,8 @@ class MainActivity : Activity() {
             if (parent == null) "$prefix · ${panel.name}" else "$prefix · $parent / ${panel.name}"
         }
         DeckUi.choices(DeckUi.dialog(this).setTitle("Profiller ve paneller"), captions) { index ->
-            selectPanel(panels.getOrNull(index - 1)?.id)
+            val panel = panels.getOrNull(index - 1)
+            if (panel?.kind == "profile") openProfile(panel.id, badge = true) else selectPanel(panel?.id, badge = true)
         }
             .setNeutralButton("Düzenle") { _, _ -> managePanel() }.setNegativeButton("Kapat", null).showDeck()
     }
@@ -694,9 +818,19 @@ class MainActivity : Activity() {
         val span = DeckUi.choose(this, "Genişlik", listOf("Standart genişlik", "Çift genişlik"), model.spanFor(id) - 1)
         val tints = linkedMapOf("Varsayılan renk" to null, "Petrol" to "#143731",
             "Gece mavisi" to "#182B49", "Mürdüm" to "#3B2649", "Kiremit" to "#442C28")
+        model.colorFor(id)?.takeIf { it !in tints.values }?.let { tints["Mevcut özel renk"] = it }
         val tint = DeckUi.choose(this, "Renk", tints.keys.toList(),
             tints.values.indexOf(model.colorFor(id)).coerceAtLeast(0))
         panel.addView(span)
+        fun sizeField(caption: String, value: Int?): EditText = EditText(this).apply {
+            DeckUi.field(this)
+            hint = caption
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(value?.toString().orEmpty())
+            panel.addView(this)
+        }
+        val width = sizeField("Genişlik (px, boşsa otomatik)", model.widthFor(id))
+        val height = sizeField("Yükseklik (px, boşsa otomatik)", model.heightFor(id))
         panel.addView(tint)
         val clone = if (current != null) android.widget.CheckBox(this).apply {
             text = "Yeni kopya olarak kaydet"
@@ -727,7 +861,15 @@ class MainActivity : Activity() {
                     replacement.put("routine", definition)
                 }
                 current?.optString("art")?.takeIf { it.isNotEmpty() }?.let { replacement.put("art", it) }
-                model.place(target, panelId, span.selectedItemPosition + 1, tints.values.elementAt(tint.selectedItemPosition))
+                val pixelWidth = width.text.toString().toIntOrNull()
+                val pixelHeight = height.text.toString().toIntOrNull()
+                if (width.text.isNotEmpty() && (pixelWidth == null || pixelWidth !in 80..1500)) {
+                    width.error = "80–1500 px gir"; return@setOnClickListener
+                }
+                if (height.text.isNotEmpty() && (pixelHeight == null || pixelHeight !in 70..660)) {
+                    height.error = "70–660 px gir"; return@setOnClickListener
+                }
+                model.place(target, panelId, span.selectedItemPosition + 1, tints.values.elementAt(tint.selectedItemPosition), pixelWidth, pixelHeight)
                 saveEdit(originalRevision, target, replacement, model)
                 displayed.dismiss()
             }
@@ -866,7 +1008,9 @@ class MainActivity : Activity() {
             isClickable = true
             isFocusable = true
             setPadding(dp(13), dp(12), dp(11), dp(12))
-            DeckUi.touch(this, tint?.let(Color::parseColor) ?: surface, 22)
+            val fill = tint?.let(Color::parseColor) ?: surface
+            DeckUi.touch(this, fill, 22, if (tint == null) DeckUi.border else Color.TRANSPARENT)
+            clipToOutline = true
             addView(label(when (action) {
                 "Sayfa" -> "▤"
                 "Klasör" -> "▱"

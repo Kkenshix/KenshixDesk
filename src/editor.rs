@@ -18,7 +18,9 @@ use crate::{
     store,
 };
 
-const COLUMNS: usize = 5;
+const M22_CONTENT_WIDTH: f32 = 1489.0;
+const TILE_GAP: f32 = 15.0;
+const AUTO_HEIGHT: f32 = 210.0;
 const PANEL: Color32 = Color32::from_rgb(17, 17, 20);
 const ACCENT: Color32 = Color32::from_rgb(196, 177, 255);
 
@@ -44,6 +46,7 @@ pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> 
                 message: String::new(),
                 drag: None,
                 textures: HashMap::new(),
+                videos: std::collections::HashSet::new(),
                 dirty: false,
                 resize_start: None,
                 phone: adb.map(PhonePreview::new),
@@ -62,8 +65,9 @@ struct Editor {
     message: String,
     drag: Option<Uuid>,
     textures: HashMap<String, ArtPreview>,
+    videos: std::collections::HashSet<String>,
     dirty: bool,
-    resize_start: Option<(Uuid, f32)>,
+    resize_start: Option<(Uuid, Pos2)>,
     phone: Option<PhonePreview>,
 }
 
@@ -99,6 +103,8 @@ impl Editor {
                 panel: None,
                 color: None,
                 span: 1,
+                width_px: None,
+                height_px: None,
             })
     }
 
@@ -187,10 +193,11 @@ impl Editor {
                 panel: self.panel,
                 color: None,
                 span: 1,
+                width_px: None,
+                height_px: None,
             },
         );
         self.selected = Some(id);
-        self.save();
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
@@ -224,13 +231,14 @@ impl Editor {
                 let mut tiles: Vec<Tile> = children.into_iter().map(Tile::Panel).collect();
                 tiles.extend(buttons.into_iter().map(Tile::Button));
                 tiles.push(Tile::Create);
-                let gap = 7.0;
-                let width = ui.available_width();
-                let cell = ((width - gap * 4.0) / 5.0).max(16.0);
-                let height = cell.clamp(72.0, 115.0);
+                let width = ui.available_width().max(100.0);
+                let scale = width / M22_CONTENT_WIDTH;
+                let gap = scale * TILE_GAP;
+                let cell = (width - gap * 5.0) / 5.0;
                 let origin = ui.cursor().min;
-                let mut row = 0;
-                let mut column = 0;
+                let mut row_y = 0.0;
+                let mut row_height: f32 = 0.0;
+                let mut column_x = 0.0;
                 let mut drop_onto = None;
                 for tile in tiles {
                     let placement = if let Tile::Button(button) = &tile {
@@ -238,20 +246,28 @@ impl Editor {
                     } else {
                         None
                     };
-                    let span = placement
+                    let span = placement.as_ref().map_or(1, |p| p.span);
+                    let tile_width = placement
                         .as_ref()
-                        .map_or(1, |place| usize::from(place.span));
-                    if column + span > COLUMNS {
-                        row += 1;
-                        column = 0;
+                        .and_then(|p| p.width_px)
+                        .map_or(f32::from(span) * (cell + gap) - gap, |px| {
+                            f32::from(px) * scale
+                        })
+                        .min(width - gap);
+                    let tile_height = placement
+                        .as_ref()
+                        .and_then(|p| p.height_px)
+                        .map_or(AUTO_HEIGHT, f32::from)
+                        * scale;
+                    if column_x + tile_width + gap > width + 0.1 {
+                        row_y += row_height + gap;
+                        row_height = 0.0;
+                        column_x = 0.0;
                     }
-                    let start = origin
-                        + Vec2::new(column as f32 * (cell + gap), row as f32 * (height + gap));
-                    let rect = Rect::from_min_size(
-                        start,
-                        Vec2::new(span as f32 * (cell + gap) - gap, height),
-                    );
-                    column += span;
+                    let start = origin + Vec2::new(column_x, row_y);
+                    let rect = Rect::from_min_size(start, Vec2::new(tile_width, tile_height));
+                    column_x += tile_width + gap;
+                    row_height = row_height.max(tile_height);
                     match tile {
                         Tile::Panel(panel) => {
                             let response =
@@ -275,17 +291,15 @@ impl Editor {
                         }
                         Tile::Button(button) => {
                             let mut placement = placement.expect("button placement");
-                            let resize = Rect::from_min_max(
-                                Pos2::new(rect.max.x - 16.0, rect.min.y + 5.0),
-                                rect.max,
-                            );
-                            let body =
-                                Rect::from_min_max(rect.min, Pos2::new(resize.min.x, rect.max.y));
+                            let handle_size =
+                                17.0_f32.min(rect.width() / 2.0).min(rect.height() / 2.0);
+                            let resize =
+                                Rect::from_min_max(rect.max - Vec2::splat(handle_size), rect.max);
                             let response =
-                                ui.interact(body, ui.id().with(button.id), Sense::click_and_drag());
+                                ui.interact(rect, ui.id().with(button.id), Sense::click_and_drag());
                             let handle = ui
                                 .interact(resize, ui.id().with((button.id, "size")), Sense::drag())
-                                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                                .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
                             phone_tile(
                                 ui,
                                 rect,
@@ -301,13 +315,15 @@ impl Editor {
                             if let Some(id) = &button.art {
                                 self.draw_art(ui, id, rect);
                             }
-                            ui.painter().line_segment(
-                                [
-                                    resize.right_center() - Vec2::new(8.0, 8.0),
-                                    resize.right_center() - Vec2::new(8.0, -8.0),
-                                ],
-                                egui::Stroke::new(2.0_f32, Color32::from_gray(95)),
-                            );
+                            if self.selected == Some(button.id) || handle.hovered() {
+                                ui.painter().line_segment(
+                                    [
+                                        resize.right_bottom() - Vec2::new(3.0, 10.0),
+                                        resize.right_bottom() - Vec2::new(10.0, 3.0),
+                                    ],
+                                    egui::Stroke::new(1.5_f32, ACCENT),
+                                );
+                            }
                             if response.clicked() {
                                 self.selected = Some(button.id);
                             }
@@ -318,24 +334,33 @@ impl Editor {
                             if ui.input(|input| input.pointer.any_released())
                                 && ui
                                     .input(|input| input.pointer.interact_pos())
-                                    .is_some_and(|point| body.contains(point))
+                                    .is_some_and(|point| rect.contains(point))
                             {
                                 drop_onto = Some(button.id);
                             }
                             if handle.drag_started() {
+                                self.selected = Some(button.id);
                                 self.resize_start = handle
                                     .interact_pointer_pos()
-                                    .map(|point| (button.id, point.x));
+                                    .map(|point| (button.id, point));
                             }
                             if handle.drag_stopped()
                                 && let Some((id, start)) = self.resize_start.take()
                                 && id == button.id
-                                && let Some(end) = handle.interact_pointer_pos()
-                                && (end.x - start).abs() > 15.0
+                                && let Some(end) = ui.input(|input| input.pointer.latest_pos())
                             {
-                                placement.span = if end.x > start { 2 } else { 1 };
-                                self.place(button.id, placement);
-                                self.save();
+                                let delta = (end - start) / scale;
+                                if delta.length_sq() >= 1.0 {
+                                    placement.width_px = Some(
+                                        (rect.width() / scale + delta.x).round().clamp(80.0, 1500.0)
+                                            as u16,
+                                    );
+                                    placement.height_px = Some(
+                                        (rect.height() / scale + delta.y).round().clamp(70.0, 660.0)
+                                            as u16,
+                                    );
+                                    self.place(button.id, placement);
+                                }
                             }
                         }
                         Tile::Create => {
@@ -357,7 +382,7 @@ impl Editor {
                         }
                     }
                 }
-                ui.allocate_space(Vec2::new(width, (row + 1) as f32 * (height + gap)));
+                ui.allocate_space(Vec2::new(width, row_y + row_height + gap));
                 if ui.input(|input| input.pointer.any_released())
                     && let (Some(from), Some(to)) = (self.drag.take(), drop_onto)
                     && from != to
@@ -372,7 +397,6 @@ impl Editor {
                     let item = self.deck.buttons.remove(from);
                     self.deck.buttons.insert(to, item);
                     self.dirty = true;
-                    self.save();
                 }
             });
     }
@@ -384,19 +408,35 @@ impl Editor {
         if self.textures.len() >= 16 && !self.textures.contains_key(id) {
             self.textures.clear();
         }
+        if self.videos.contains(id) {
+            ui.painter().with_clip_rect(tile).text(
+                tile.center(),
+                egui::Align2::CENTER_CENTER,
+                "MP4",
+                egui::FontId::proportional(13.0),
+                ACCENT,
+            );
+            return;
+        }
         let Some(preview) = self.textures.get(id) else {
-            if let Ok(Some(raw)) = art::read(&self.db, id)
-                && let Some(art) = ArtPreview::new(ui, id, &raw)
-            {
-                self.textures.insert(id.into(), art);
-                self.draw_art(ui, id, tile);
+            if let Ok(Some(raw)) = art::read(&self.db, id) {
+                if art::is_mp4(&raw) {
+                    self.videos.insert(id.into());
+                    self.draw_art(ui, id, tile);
+                } else if let Some(art) = ArtPreview::new(ui, id, &raw) {
+                    self.textures.insert(id.into(), art);
+                    self.draw_art(ui, id, tile);
+                }
             }
             return;
         };
         let image = Rect::from_min_max(
-            tile.min + Vec2::new(9.0, 8.0),
-            Pos2::new(tile.max.x - 15.0, tile.max.y - 43.0),
+            tile.min + Vec2::new(5.0, 5.0),
+            Pos2::new(tile.max.x - 5.0, tile.min.y + tile.height() * 0.58),
         );
+        if !image.is_positive() {
+            return;
+        }
         let (texture, delay) = preview.frame();
         if let Some(delay) = delay {
             ui.ctx().request_repaint_after(delay);
@@ -450,12 +490,44 @@ impl Editor {
             self.dirty |= routine_editor(ui, routine);
         }
         ui.separator();
-        let prior_span = placement.span;
-        ui.horizontal(|ui| {
-            ui.label("Genişlik");
-            ui.selectable_value(&mut placement.span, 1, "1 hücre");
-            ui.selectable_value(&mut placement.span, 2, "2 hücre");
+        let prior_size = (placement.width_px, placement.height_px);
+        let mut width = placement.width_px.unwrap_or_else(|| {
+            (((M22_CONTENT_WIDTH - TILE_GAP * 5.0) / 5.0 + TILE_GAP) * f32::from(placement.span)
+                - TILE_GAP)
+                .round() as u16
         });
+        let mut height = placement.height_px.unwrap_or(AUTO_HEIGHT as u16);
+        ui.label("Buton boyutu");
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::DragValue::new(&mut width)
+                        .range(80..=1500)
+                        .speed(1)
+                        .prefix("En ")
+                        .suffix(" px"),
+                )
+                .changed()
+            {
+                placement.width_px = Some(width);
+            }
+            if ui
+                .add(
+                    egui::DragValue::new(&mut height)
+                        .range(70..=660)
+                        .speed(1)
+                        .prefix("Boy ")
+                        .suffix(" px"),
+                )
+                .changed()
+            {
+                placement.height_px = Some(height);
+            }
+        });
+        if ui.small_button("Otomatik boyut").clicked() {
+            placement.width_px = None;
+            placement.height_px = None;
+        }
         let prior_color = placement.color.clone();
         let mut color = placement
             .color
@@ -484,14 +556,15 @@ impl Editor {
                     ui.selectable_value(&mut placement.panel, panel, name);
                 }
             });
-        if ui.button("GIF veya fotoğraf seç").clicked()
+        if ui.button("Fotoğraf / GIF / MP4 ekle").clicked()
             && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Görsel", &["gif", "png", "jpg", "jpeg"])
+                .add_filter("Buton medyası", &["gif", "png", "jpg", "jpeg", "mp4"])
                 .pick_file()
         {
             match art::save(&self.db, &path) {
                 Ok(hash) => {
                     button.art = Some(hash);
+                    self.message = "Medya eklendi. Kaydet ile telefona gönder.".into();
                     self.dirty = true;
                 }
                 Err(error) => self.message = error.to_string(),
@@ -504,17 +577,17 @@ impl Editor {
         ui.separator();
         let valid =
             !button.label.trim().is_empty() && button.routine.as_ref().is_none_or(Routine::valid);
-        let save = ui.add_enabled(valid && self.dirty, egui::Button::new("Uygula"));
+        let save = ui.add_enabled(
+            valid && self.dirty,
+            egui::Button::new("Kaydet ve telefona gönder"),
+        );
         let clone = ui.button("Çoğalt").clicked();
         let delete = ui.button("Butonu sil").clicked();
-        if prior_span != placement.span
+        if prior_size != (placement.width_px, placement.height_px)
             || prior_color != placement.color
             || prior_panel != placement.panel
         {
             self.place(id, placement.clone());
-            if valid {
-                self.save();
-            }
         }
         if save.clicked()
             || (valid
@@ -557,6 +630,12 @@ impl eframe::App for Editor {
         }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(self.dirty, egui::Button::new("Kaydet"))
+                    .clicked()
+                {
+                    self.save();
+                }
                 egui::ComboBox::from_id_salt("panels")
                     .selected_text(self.panel_name(self.panel))
                     .show_ui(ui, |ui| {
@@ -633,7 +712,7 @@ impl eframe::App for Editor {
             });
         egui::TopBottomPanel::bottom("state").show(ctx, |ui| {
             ui.label(if self.message.is_empty() {
-                "Butonu sürükleyerek sırala. Sağ kenarından çekerek genişliğini değiştir."
+                "Butonu taşı veya sağ alt köşesinden iki yönde boyutlandır. Kaydet, değişiklikleri telefona gönderir."
             } else {
                 &self.message
             });

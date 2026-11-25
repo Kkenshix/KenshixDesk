@@ -47,14 +47,27 @@ internal class PanelLayout(source: JSONObject?) {
 
     fun panelFor(button: String): String? = placements.optJSONObject(button)?.stringOrNull("panel")
     fun spanFor(button: String): Int = placements.optJSONObject(button)?.optInt("span", 1) ?: 1
+    fun widthFor(button: String): Int? = placements.optJSONObject(button)?.optInt("width_px", 0)?.takeIf { it > 0 }
+    fun heightFor(button: String): Int? = placements.optJSONObject(button)?.optInt("height_px", 0)?.takeIf { it > 0 }
+    fun profileFor(id: String?): Panel? {
+        var panel = item(id)
+        repeat(65) {
+            if (panel?.kind == "profile") return panel
+            panel = item(panel?.parent)
+        }
+        return null
+    }
     fun colorFor(button: String): String? = placements.optJSONObject(button)?.stringOrNull("color")
 
-    fun place(button: String, panel: String?, span: Int, tint: String?) {
-        if (panel == null && span == 1 && tint == null) {
+    fun place(button: String, panel: String?, span: Int, tint: String?, width: Int? = null, height: Int? = null) {
+        if (panel == null && span == 1 && tint == null && width == null && height == null) {
             placements.remove(button)
         } else {
             placements.put(button, JSONObject().put("panel", panel ?: JSONObject.NULL)
-                .put("span", span).put("color", tint ?: JSONObject.NULL))
+                .put("span", span).put("color", tint ?: JSONObject.NULL).apply {
+                    if (width != null) put("width_px", width)
+                    if (height != null) put("height_px", height)
+                })
         }
     }
 

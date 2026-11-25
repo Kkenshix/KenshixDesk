@@ -243,7 +243,7 @@ internal class RoutineEditor(
         value.matches(Regex("[A-Z0-9]|F([1-9]|1[0-9]|2[0-4])")) || value in supportedKeys
 
     companion object {
-        private val supportedKeys = setOf("CTRL", "SHIFT", "ALT", "WIN", "ENTER", "ESC", "SPACE", "TAB",
+        private val supportedKeys = setOf("CTRL", "SHIFT", "ALT", "WIN", "PRTSC", "PRINTSCREEN", "SNAPSHOT", "ENTER", "ESC", "SPACE", "TAB",
             "BACKSPACE", "DELETE", "INSERT", "PAGEUP", "PAGEDOWN", "END", "HOME", "LEFT", "RIGHT", "UP", "DOWN")
     }
 }

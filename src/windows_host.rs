@@ -70,7 +70,7 @@ fn input_key(key: VIRTUAL_KEY, release: bool) -> INPUT {
                     Default::default()
                 } | if matches!(
                     key.0,
-                    0x21..=0x28 | 0x2D | 0x2E | 0x5B | 0x5C | 0xA3 | 0xA5 | 0x6F
+                    0x21..=0x28 | 0x2C..=0x2E | 0x5B | 0x5C | 0xA3 | 0xA5 | 0x6F
                 ) {
                     KEYEVENTF_EXTENDEDKEY
                 } else {
@@ -133,6 +133,7 @@ pub(crate) fn key_code(name: &str) -> Option<VIRTUAL_KEY> {
         "ALT" => 0x12,
         "WIN" => 0x5B,
         "ENTER" => 0x0D,
+        "PRTSC" | "PRINTSCREEN" | "SNAPSHOT" => 0x2C,
         "ESC" | "ESCAPE" => 0x1B,
         "SPACE" => 0x20,
         "TAB" => 0x09,

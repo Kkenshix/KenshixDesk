@@ -11,6 +11,7 @@ pub(crate) enum Edit {
     List,
     Add { label: String, action: Action },
     Remove(Uuid),
+    SetMedia { id: Uuid, file: std::path::PathBuf },
 }
 
 impl Edit {
@@ -26,6 +27,11 @@ impl Edit {
                 let action = serde_json::from_value(serde_json::Value::String(action))
                     .context("eylem adı geçersiz")?;
                 Ok(Self::Add { label, action })
+            }
+            "--set-button-media" => {
+                let id = arguments.next().context("buton kimliği gerekli")?.parse()?;
+                let file = arguments.next().context("medya dosyası gerekli")?.into();
+                Ok(Self::SetMedia { id, file })
             }
             "--remove-button" => {
                 let id = arguments.next().context("buton kimliği gerekli")?.parse()?;
@@ -50,6 +56,14 @@ impl Edit {
                     routine: None,
                     art: None,
                 });
+            }
+            Self::SetMedia { id, file } => {
+                let button = deck
+                    .buttons
+                    .iter_mut()
+                    .find(|button| button.id == id)
+                    .context("buton bulunamadı")?;
+                button.art = Some(crate::art::save(db, &file)?);
             }
             Self::Remove(id) => {
                 let count = deck.buttons.len();

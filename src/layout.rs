@@ -33,6 +33,10 @@ pub(crate) struct Placement {
     pub panel: Option<Uuid>,
     pub color: Option<String>,
     pub span: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_px: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_px: Option<u16>,
 }
 
 impl Layout {
@@ -78,6 +82,12 @@ impl Layout {
                     .panel
                     .is_none_or(|panel| panels.contains_key(&panel))
                 && matches!(placement.span, 1 | 2)
+                && placement
+                    .width_px
+                    .is_none_or(|value| (80..=1500).contains(&value))
+                && placement
+                    .height_px
+                    .is_none_or(|value| (70..=660).contains(&value))
                 && placement.color.as_ref().is_none_or(|value| {
                     value.len() == 7
                         && value.starts_with('#')
