@@ -113,12 +113,26 @@ enum Command {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum BrowserMessage {
-    Begin { video: Video },
+    Begin {
+        video: Video,
+    },
     End,
-    Volume { percent: u8 },
-    Paused { value: bool },
+    Volume {
+        percent: u8,
+    },
+    Paused {
+        value: bool,
+    },
     Unavailable,
-    Status { stage: TraceStage },
+    Status {
+        stage: TraceStage,
+    },
+    Cadence {
+        source: u16,
+        captured: u16,
+        sent: u16,
+        generated: u16,
+    },
     Ping,
 }
 
@@ -378,10 +392,12 @@ async fn browser_socket(mut socket: WebSocket, bridge: VideoBridge, key: String)
     }
     let publisher = Uuid::new_v4();
     let mut commands = bridge.0.browser.subscribe();
-    let _ = socket
-        .send(Message::Text("{\"type\":\"ready\"}".into()))
-        .await;
     let trace = std::env::var_os("KDECK_VIDEO_TRACE").is_some();
+    let _ = socket
+        .send(Message::Text(
+            json!({"type":"ready","trace":trace}).to_string().into(),
+        ))
+        .await;
     let mut foreground = tokio::time::interval(Duration::from_millis(45));
     foreground.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut previous_pid = None;
@@ -398,6 +414,11 @@ async fn browser_socket(mut socket: WebSocket, bridge: VideoBridge, key: String)
                         match event {
                             BrowserMessage::Status { stage } => {
                                 if trace { eprintln!("Video: browser status {stage:?}"); }
+                            }
+                            BrowserMessage::Cadence { source, captured, sent, generated } => {
+                                if trace {
+                                    eprintln!("Video: source={source} captured={captured} sent={sent} generated={generated} FPS");
+                                }
                             }
                             event => {
                                 if matches!(event, BrowserMessage::Begin { .. }) {
@@ -477,6 +498,7 @@ pub(crate) fn install(directory: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&extension)?;
     for (name, data) in [
         ("manifest.json", include_str!("../browser/manifest.json")),
+        ("motion.js", include_str!("../browser/motion.js")),
         ("worker.js", include_str!("../browser/worker.js")),
         ("video.js", include_str!("../browser/video.js")),
     ] {

@@ -6,6 +6,7 @@ const FRAME_LIMIT = 512 * 1024;
 const BASE64_LIMIT = 4 * Math.ceil(FRAME_LIMIT / 3);
 let socket;
 let ready = false;
+let diagnostic = false;
 let current;
 let dismissed;
 let focused;
@@ -25,6 +26,7 @@ function connect() {
         try { reply = JSON.parse(event.data); } catch { return; }
         if (reply.type === 'ready') {
             ready = true;
+            diagnostic = reply.trace === true;
             status = undefined;
             trace('ready');
             void refresh();
@@ -101,7 +103,7 @@ function choose() {
     trace('playing');
     if (tab === foreground) return;
     current = {tab,frame,port,key:media.key,id:crypto.randomUUID(),begun:false};
-    try { port.postMessage({type:'start',id:current.id,key:current.key}); }
+    try { port.postMessage({type:'start',id:current.id,key:current.key,diagnostic}); }
     catch { frames.delete(frame); stop(); }
 }
 
@@ -183,6 +185,9 @@ chrome.runtime.onConnect.addListener(port => {
                     width:message.width,height:message.height,codec:message.codec}});
             } else if (message.type === 'frame' && current.begun && ready) {
                 sendFrame(message);
+            } else if (message.type === 'cadence' && diagnostic && current.begun) {
+                transmit({type:'cadence',source:message.source,captured:message.captured,
+                    sent:message.sent,generated:message.generated});
             } else if (message.type === 'unavailable') {
                 unavailable.set(frame,current.key);
                 stop();

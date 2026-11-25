@@ -197,7 +197,7 @@ private class VideoDecoder(
             }
             previousRenderNs + interval * 1_000
         }
-        val renderAt = if (planned == null || planned !in now - 8_000_000..now + 42_000_000) {
+        val renderAt = if (planned == null || planned !in now - 8_000_000..now + 58_000_000) {
             now + 22_000_000
         } else {
             maxOf(now, planned)
