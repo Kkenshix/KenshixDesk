@@ -68,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var battery: BroadcastReceiver
     private lateinit var screenPower: BroadcastReceiver
     private var openClockOnWake = false
+    private var manuallyAsleep = false
     private var batteryText = ""
     private var status = "Eşleştirme gerekli"
     private var deck = JSONObject().put("revision", 0).put("buttons", JSONArray())
@@ -170,6 +171,7 @@ class MainActivity : Activity() {
         screenPower = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                    if (manuallyAsleep) return
                     openClockOnWake = true
                     if (!standby && kiosk.enabled() && kiosk.locked()) {
                         handler.postDelayed({
@@ -181,6 +183,11 @@ class MainActivity : Activity() {
                             }
                         }, 170)
                     }
+                }
+                if (intent.action == Intent.ACTION_SCREEN_ON && manuallyAsleep) {
+                    manuallyAsleep = false
+                    if (!inactive) wake()
+                    return
                 }
                 if (intent.action == Intent.ACTION_SCREEN_ON && !inactive && openClockOnWake) {
                     openClockOnWake = false
@@ -334,8 +341,17 @@ class MainActivity : Activity() {
         showPageName("Ses Mikseri")
     }
 
+    private fun sleepScreen() {
+        manuallyAsleep = true
+        openClockOnWake = false
+        runCatching { kiosk.sleepScreen() }.onFailure {
+            manuallyAsleep = false
+            notify("Android ekranı kapatamadı.")
+        }
+    }
+
     private fun enterStandby() {
-        if (inactive || browserPlayer != null || touchInProgress || openDialogs > 0 || !::link.isInitialized) return
+        if (inactive || manuallyAsleep || browserPlayer != null || touchInProgress || openDialogs > 0 || !::link.isInitialized) return
         handler.removeCallbacks(dim)
         handler.removeCallbacks(showStandby)
         dimmed = true
@@ -463,6 +479,12 @@ class MainActivity : Activity() {
             addView(statusView)
         }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
+        if (kiosk.isOwner()) {
+            top.addView(button("⏻") { sleepScreen() }.apply {
+                contentDescription = "Ekranı kapat"
+                setPadding(0, 0, 0, 0)
+            }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(6) })
+        }
         clockView = label("", 12, muted).apply {
             gravity = Gravity.CENTER
             minHeight = dp(48)

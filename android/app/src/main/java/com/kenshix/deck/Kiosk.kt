@@ -28,6 +28,11 @@ internal class Kiosk(private val activity: Activity) {
     fun fullScreen(): Boolean = enabled() || preview
     fun locked(): Boolean = tasks.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
 
+    fun sleepScreen() {
+        check(isOwner())
+        policy.lockNow()
+    }
+
     fun preview(active: Boolean) {
         preview = active
         updateBars()
