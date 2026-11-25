@@ -418,7 +418,7 @@ class MainActivity : Activity() {
 
     private fun openQueuedVideo() {
         val offer = queuedVideo ?: return
-        if (inactive || openDialogs > 0 || saving || browserPlayer?.offer?.id == offer.id ||
+        if (inactive || openDialogs > 0 || saving || browserPlayer?.offer == offer ||
             preferences.getString("closed_browser_video", null) == offer.id) return
         browserPlayer?.release()
         browserPlayer = BrowserVideoPlayer(this, offer) {

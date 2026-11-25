@@ -9,12 +9,16 @@ import android.os.Looper
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.widget.FrameLayout
 import okio.ByteString
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.roundToInt
+
+internal const val BROWSER_FRAME_LIMIT = 512 * 1024
 
 internal data class BrowserOffer(
-    val id: String, val width: Int, val height: Int,
+    val id: String, val width: Int, val height: Int, val mime: String,
 ) {
     companion object {
         fun parse(json: JSONObject): BrowserOffer? {
@@ -23,10 +27,16 @@ internal data class BrowserOffer(
             val site = json.optString("site")
             val width = json.optInt("width")
             val height = json.optInt("height")
+            val mime = when (json.optString("codec", "vp8")) {
+                "vp8" -> MediaFormat.MIMETYPE_VIDEO_VP8
+                "h264" -> MediaFormat.MIMETYPE_VIDEO_AVC
+                else -> return null
+            }
             val volume = json.optInt("volume", -1)
-            if (id != canonical || site !in setOf("youtube", "kick", "opera") || width !in 2..960 ||
-                height !in 2..540 || width % 2 != 0 || height % 2 != 0 || volume !in 0..100) return null
-            return BrowserOffer(id, width, height)
+            if (id != canonical || site !in setOf("youtube", "kick", "opera") ||
+                minOf(width, height) !in 2..1080 || maxOf(width, height) > 1920 ||
+                width % 2 != 0 || height % 2 != 0 || volume !in 0..100) return null
+            return BrowserOffer(id, width, height, mime)
         }
     }
 }
@@ -35,19 +45,40 @@ internal class BrowserVideoPlayer(
     context: Context,
     val offer: BrowserOffer,
     failed: () -> Unit,
-) : SurfaceView(context) {
+) : FrameLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
-    private val decoder = VideoDecoder(offer.width, offer.height) {
+    private val decoder = VideoDecoder(offer.width, offer.height, offer.mime) {
         handler.post { failed() }
     }
 
-    init {
-        contentDescription = "Opera videosu"
+    private val picture = SurfaceView(context).apply {
         holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) { decoder.surface(holder.surface) }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
             override fun surfaceDestroyed(holder: SurfaceHolder) { decoder.surface(null) }
         })
+    }
+
+    init {
+        contentDescription = "Opera videosu"
+        addView(picture)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val height = MeasureSpec.getSize(heightMeasureSpec)
+        val scale = minOf(width.toDouble() / offer.width, height.toDouble() / offer.height)
+        val pictureWidth = (offer.width * scale).roundToInt()
+        val pictureHeight = (offer.height * scale).roundToInt()
+        picture.measure(MeasureSpec.makeMeasureSpec(pictureWidth, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(pictureHeight, MeasureSpec.EXACTLY))
+        setMeasuredDimension(width, height)
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        val x = (width - picture.measuredWidth) / 2
+        val y = (height - picture.measuredHeight) / 2
+        picture.layout(x, y, x + picture.measuredWidth, y + picture.measuredHeight)
     }
 
     fun accept(frame: ByteString) = decoder.enqueue(frame)
@@ -62,6 +93,7 @@ internal class BrowserVideoPlayer(
 private class VideoDecoder(
     private val width: Int,
     private val height: Int,
+    private val mime: String,
     private val failed: () -> Unit,
 ) {
     private val thread = HandlerThread("DeckVideo").apply { start() }
@@ -74,7 +106,7 @@ private class VideoDecoder(
     @Volatile private var closed = false
 
     fun enqueue(frame: ByteString) {
-        if (closed || frame.size !in 10..(256 * 1024) || frame[0].toInt() !in 0..1) return
+        if (closed || frame.size !in 10..BROWSER_FRAME_LIMIT || frame[0].toInt() !in 0..1) return
         synchronized(frames) {
             if (frames.size >= 12) {
                 frames.clear()
@@ -99,7 +131,7 @@ private class VideoDecoder(
         if (previous) synchronized(frames) { frames.clear(); needsKey = true }
         if (output?.isValid != true) return@post
         runCatching {
-            val next = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
+            val next = MediaCodec.createDecoderByType(mime)
             codec = next
             next.setCallback(object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(source: MediaCodec, index: Int) {
@@ -111,15 +143,12 @@ private class VideoDecoder(
                 override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
                     if (codec === source) { clearCodec(); failed() }
                 }
-                override fun onOutputFormatChanged(source: MediaCodec, format: MediaFormat) {
-                    if (codec === source) source.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
-                }
+                override fun onOutputFormatChanged(source: MediaCodec, format: MediaFormat) = Unit
             }, handler)
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024)
+            val format = MediaFormat.createVideoFormat(mime, width, height)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, BROWSER_FRAME_LIMIT)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             next.configure(format, output, null, 0)
-            next.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
             next.start()
         }.onFailure { clearCodec(); failed() }
     }

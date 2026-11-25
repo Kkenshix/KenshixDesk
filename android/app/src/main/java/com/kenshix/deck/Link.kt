@@ -297,7 +297,7 @@ internal class DeckLink(
                     }
                 }
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    if (videoSocket === webSocket && bytes.size <= 256 * 1024) browserFrame(bytes)
+                    if (videoSocket === webSocket && bytes.size <= BROWSER_FRAME_LIMIT) browserFrame(bytes)
                 }
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     webSocket.close(code, null)

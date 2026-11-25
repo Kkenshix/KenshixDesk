@@ -2,6 +2,8 @@ importScripts('config.js');
 
 const frames = new Map();
 const unavailable = new Map();
+const FRAME_LIMIT = 512 * 1024;
+const BASE64_LIMIT = 4 * Math.ceil(FRAME_LIMIT / 3);
 let socket;
 let ready = false;
 let current;
@@ -129,7 +131,7 @@ async function refresh(windowId) {
 }
 
 function sendFrame(message) {
-    if (socket?.bufferedAmount > 192 * 1024 || message.data.length > 350000) {
+    if (socket?.bufferedAmount > 384 * 1024 || message.data.length > BASE64_LIMIT) {
         current.needsKey = true;
         return;
     }
@@ -137,7 +139,10 @@ function sendFrame(message) {
     try {
         const bytes = Uint8Array.fromBase64 ? Uint8Array.fromBase64(message.data)
             : Uint8Array.from(atob(message.data), value => value.charCodeAt(0));
-        if (bytes.length < 10 || bytes.length > 256 * 1024) return;
+        if (bytes.length < 10 || bytes.length > FRAME_LIMIT) {
+            current.needsKey = true;
+            return;
+        }
         socket.send(bytes);
         current.needsKey = false;
     } catch {
@@ -174,7 +179,7 @@ chrome.runtime.onConnect.addListener(port => {
                 trace('capturing');
                 current.needsKey = true;
                 transmit({type:'begin',video:{id:current.id,site:entry.media.site,volume:entry.media.volume,
-                    width:message.width,height:message.height}});
+                    width:message.width,height:message.height,codec:message.codec}});
             } else if (message.type === 'frame' && current.begun && ready) {
                 sendFrame(message);
             } else if (message.type === 'unavailable') {

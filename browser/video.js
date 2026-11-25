@@ -8,6 +8,7 @@ let retry;
 let lastShadowScan = -Infinity;
 let shadowRoots = [];
 const videoKeys = new WeakMap();
+const FRAME_LIMIT = 512 * 1024;
 const hostname = location.hostname;
 const site = /(^|\.)youtube(?:-nocookie)?\.com$/.test(hostname) ? 'youtube'
     : /(^|\.)kick\.com$/.test(hostname) ? 'kick' : 'opera';
@@ -46,6 +47,12 @@ function sample() {
         since = Date.now();
         stop();
     }
+    if (playback && source) {
+        const {width,height} = transferSize(source.video);
+        if (width !== playback.width || height !== playback.height) {
+            void start({id:playback.id,key:source.key});
+        }
+    }
     const playing = source ? !source.video.paused : false;
     if (playing && !wasPlaying && !playback) since = Date.now();
     wasPlaying = playing;
@@ -75,50 +82,80 @@ function encodeBase64(packet) {
     return btoa(bytes);
 }
 
-async function start(message) {
+function transferSize(video) {
+    const portrait = video.videoHeight > video.videoWidth;
+    const ratio = Math.min(1, (portrait ? 1080 : 1920) / video.videoWidth,
+        (portrait ? 1920 : 1080) / video.videoHeight);
+    return {
+        width:2 * Math.max(1, Math.floor(video.videoWidth * ratio / 2)),
+        height:2 * Math.max(1, Math.floor(video.videoHeight * ratio / 2))
+    };
+}
+
+async function start(message, preferAvc = true) {
     stop();
     const selected = source;
     if (selected?.key !== message.key) return;
-    const run = {id:message.id,key:message.key};
+    const {width,height} = transferSize(selected.video);
+    const run = {id:message.id,key:message.key,width,height,needsKey:true};
     playback = run;
+    let codec = 'vp8';
+    function failed() {
+        if (playback !== run) return;
+        if (codec === 'h264') {
+            void start(message,false);
+        } else {
+            port.postMessage({type:'unavailable',id:run.id});
+            stop();
+        }
+    }
     try {
+        const bitrate = Math.max(3_600_000, Math.round(11_000_000 * width * height / (1920 * 1080)));
+        let config = {codec:'vp8',width,height,bitrate,framerate:60,latencyMode:'realtime',
+            hardwareAcceleration:'prefer-software'};
+        if (preferAvc && width * height > 1280 * 720) {
+            const avc = {...config,codec:'avc1.42E02A',avc:{format:'annexb'}};
+            const support = await VideoEncoder.isConfigSupported(avc).catch(() => null);
+            if (playback !== run) return;
+            if (support?.supported) {
+                config = avc;
+                codec = 'h264';
+            }
+        }
         if (selected.video.mediaKeys) throw Error('Encrypted video');
         const stream = selected.video.captureStream();
         for (const track of stream.getAudioTracks()) track.stop();
         const track = stream.getVideoTracks()[0];
         if (!track) throw Error('Video capture not available');
         run.track = track;
-        const ratio = Math.min(1, 960 / selected.video.videoWidth, 540 / selected.video.videoHeight);
-        const width = 2 * Math.max(1, Math.floor(selected.video.videoWidth * ratio / 2));
-        const height = 2 * Math.max(1, Math.floor(selected.video.videoHeight * ratio / 2));
         const encoder = new VideoEncoder({
             output(chunk) {
-                if (playback !== run || chunk.byteLength > 256 * 1024 - 9) return;
+                if (playback !== run) return;
+                const keyframe = chunk.type === 'key';
+                if (chunk.byteLength > FRAME_LIMIT - 9) {
+                    run.needsKey = true;
+                    return;
+                }
+                if (run.needsKey && !keyframe) return;
+                run.needsKey = false;
                 clearTimeout(run.noFrames);
                 const packet = new Uint8Array(9 + chunk.byteLength);
-                packet[0] = chunk.type === 'key' ? 1 : 0;
+                packet[0] = keyframe ? 1 : 0;
                 new DataView(packet.buffer).setBigUint64(1,BigInt(Math.max(0,chunk.timestamp)));
                 chunk.copyTo(packet.subarray(9));
                 const data = packet.toBase64 ? packet.toBase64() : encodeBase64(packet);
-                port.postMessage({type:'frame',id:run.id,keyframe:packet[0] === 1,data});
+                port.postMessage({type:'frame',id:run.id,keyframe,data});
             },
-            error() {
-                if (playback === run) {
-                    port.postMessage({type:'unavailable',id:run.id});
-                    stop();
-                }
-            }
+            error: failed
         });
         run.encoder = encoder;
-        encoder.configure({codec:'vp8',width,height,bitrate:3_600_000,framerate:60,
-            latencyMode:'realtime',hardwareAcceleration:'prefer-software'});
+        encoder.configure(config);
         const reader = new MediaStreamTrackProcessor({track,maxBufferSize:3}).readable.getReader();
         run.reader = reader;
-        port.postMessage({type:'begin',id:run.id,width,height});
+        port.postMessage({type:'begin',id:run.id,width,height,codec});
         run.noFrames = setTimeout(() => {
             if (playback === run && !selected.video.paused) {
-                port.postMessage({type:'unavailable',id:run.id});
-                stop();
+                failed();
             }
         },2400);
         let keyAt = -Infinity;
@@ -134,10 +171,7 @@ async function start(message) {
         }
         if (playback === run) throw Error('Video ended');
     } catch {
-        if (playback === run) {
-            port.postMessage({type:'unavailable',id:run.id});
-            stop();
-        }
+        failed();
     }
 }
 
@@ -166,7 +200,7 @@ function connect() {
 }
 
 if (globalThis.VideoEncoder && globalThis.MediaStreamTrackProcessor) {
-    for (const event of ['playing','pause','ended','volumechange','loadeddata','visibilitychange']) {
+    for (const event of ['playing','pause','ended','volumechange','loadeddata','visibilitychange','resize']) {
         document.addEventListener(event,() => {
             if (source || event !== 'visibilitychange') sample();
         },true);

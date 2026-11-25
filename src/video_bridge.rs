@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 const PORT: u16 = 43852;
 const KEY_FILE: &str = "browser-video.key";
-const FRAME_LIMIT: usize = 256 * 1024;
+const FRAME_LIMIT: usize = 512 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct VideoBridge(Arc<Bridge>);
@@ -55,6 +55,14 @@ enum Site {
     Opera,
 }
 
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum VideoCodec {
+    #[default]
+    Vp8,
+    H264,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Video {
@@ -63,13 +71,16 @@ struct Video {
     width: u16,
     height: u16,
     volume: u8,
+    #[serde(default)]
+    codec: VideoCodec,
 }
 
 impl Video {
     fn valid(&self) -> bool {
         !self.id.is_nil()
-            && (2..=960).contains(&self.width)
-            && (2..=540).contains(&self.height)
+            && self.width.min(self.height) >= 2
+            && self.width.min(self.height) <= 1080
+            && self.width.max(self.height) <= 1920
             && self.width.is_multiple_of(2)
             && self.height.is_multiple_of(2)
             && self.volume <= 100
@@ -167,7 +178,9 @@ impl VideoBridge {
         match message {
             BrowserMessage::Begin { video } if video.valid() => {
                 if let Some(old) = state.take() {
-                    let _ = self.0.phone.send(ScreenEvent::End(old.video.id));
+                    if old.publisher != publisher || old.video.id != video.id {
+                        let _ = self.0.phone.send(ScreenEvent::End(old.video.id));
+                    }
                     if old.publisher != publisher {
                         let _ = self.0.browser.send((old.publisher, Command::Stop));
                     }
