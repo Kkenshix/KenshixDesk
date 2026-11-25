@@ -1,4 +1,12 @@
-use std::{ffi::OsString, os::windows::ffi::OsStrExt, sync::Mutex};
+use std::{
+    ffi::OsString,
+    os::windows::ffi::OsStrExt,
+    sync::{
+        Mutex, Once,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Duration,
+};
 
 use serde::Serialize;
 use windows::{
@@ -34,17 +42,38 @@ struct Cpu {
 }
 
 static PREVIOUS_CPU: Mutex<Option<Cpu>> = Mutex::new(None);
+static CPU: AtomicU8 = AtomicU8::new(255);
+static START: Once = Once::new();
+
+pub(crate) fn start() {
+    START.call_once(|| {
+        let _ = crate::gpu::percent();
+        let _ = std::thread::Builder::new()
+            .name("deck-cpu".into())
+            .spawn(|| {
+                loop {
+                    if let Some(percent) = sample_cpu() {
+                        CPU.store(percent, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            });
+    });
+}
 
 pub(crate) fn read() -> Metrics {
     Metrics {
-        cpu_percent: cpu(),
+        cpu_percent: {
+            let value = CPU.load(Ordering::Relaxed);
+            (value <= 100).then_some(value)
+        },
         gpu_percent: crate::gpu::percent(),
         memory: memory(),
         system_disk: system_disk(),
     }
 }
 
-fn cpu() -> Option<u8> {
+fn sample_cpu() -> Option<u8> {
     let mut idle = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();

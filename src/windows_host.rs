@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, ensure};
 use windows::{
     Win32::{
-        Foundation::{HLOCAL, LocalFree},
+        Foundation::{HLOCAL, LocalFree, POINT},
         Security::Cryptography::{
             CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
         },
@@ -14,8 +14,8 @@ use windows::{
             VK_MEDIA_PREV_TRACK, VK_TAB,
         },
         UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-            SM_YVIRTUALSCREEN, SetCursorPos,
+            GetPhysicalCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetPhysicalCursorPos,
         },
     },
     core::PCWSTR,
@@ -200,6 +200,13 @@ pub(crate) fn type_text(value: &str, active: impl Fn() -> bool) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn cursor_position() -> Result<(i32, i32)> {
+    let mut point = POINT::default();
+    // SAFETY: Win32 writes to a live POINT buffer.
+    unsafe { GetPhysicalCursorPos(&mut point) }?;
+    Ok((point.x, point.y))
+}
+
 pub(crate) fn click(x: i32, y: i32) -> Result<()> {
     // SAFETY: These calls read virtual desktop bounds and set the interactive cursor position.
     unsafe {
@@ -211,7 +218,7 @@ pub(crate) fn click(x: i32, y: i32) -> Result<()> {
             (left..left + width).contains(&x) && (top..top + height).contains(&y),
             "koordinat masaüstü dışında"
         );
-        SetCursorPos(x, y)?;
+        SetPhysicalCursorPos(x, y)?;
     }
     let input = [MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP].map(|flags| INPUT {
         r#type: INPUT_MOUSE,

@@ -206,7 +206,8 @@ impl Editor {
             .corner_radius(23)
             .inner_margin(egui::Margin::same(18))
             .show(ui, |ui| {
-                ui.set_min_height(320.0);
+                let screen_height = (ui.available_width() + 36.0) * 720.0 / 1600.0;
+                ui.set_min_height((screen_height - 36.0).max(130.0));
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("KenshixDeck").strong().size(17.0));
                     ui.separator();
@@ -636,6 +637,11 @@ impl eframe::App for Editor {
                 {
                     self.save();
                 }
+                if let Some(phone) = &mut self.phone {
+                    ui.selectable_value(&mut phone.opened, false, "Düzenle");
+                    ui.selectable_value(&mut phone.opened, true, "M22 gerçek ekranı");
+                    ui.separator();
+                }
                 egui::ComboBox::from_id_salt("panels")
                     .selected_text(self.panel_name(self.panel))
                     .show_ui(ui, |ui| {
@@ -699,17 +705,20 @@ impl eframe::App for Editor {
                 }
             }
         });
-        egui::SidePanel::right("inspector")
-            .default_width(280.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if let Some(id) = self.selected {
-                        self.inspect_button(ui, id);
-                    } else {
-                        ui.label("Düzenlemek için önizlemeden bir buton seç.");
-                    }
+        let live = self.phone.as_ref().is_some_and(|phone| phone.opened);
+        if !live {
+            egui::SidePanel::right("inspector")
+                .default_width(280.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        if let Some(id) = self.selected {
+                            self.inspect_button(ui, id);
+                        } else {
+                            ui.label("Düzenlemek için önizlemeden bir buton seç.");
+                        }
+                    });
                 });
-            });
+        }
         egui::TopBottomPanel::bottom("state").show(ctx, |ui| {
             ui.label(if self.message.is_empty() {
                 "Butonu taşı veya sağ alt köşesinden iki yönde boyutlandır. Kaydet, değişiklikleri telefona gönderir."
@@ -718,12 +727,11 @@ impl eframe::App for Editor {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.preview(ui);
-                if let Some(phone) = &mut self.phone {
-                    phone.show(ui);
-                }
-            });
+            if let Some(phone) = self.phone.as_mut().filter(|phone| phone.opened) {
+                phone.show(ui);
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| self.preview(ui));
+            }
         });
     }
 }
@@ -964,6 +972,31 @@ fn routine_editor(ui: &mut egui::Ui, routine: &mut Routine) -> bool {
                     });
                 }
                 Step::Click { x, y } => {
+                    let sampling_id = ui.id().with("cursor-sample");
+                    let deadline = ui.ctx().data(|data| data.get_temp::<Instant>(sampling_id));
+                    if let Some(deadline) = deadline {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            ui.ctx()
+                                .data_mut(|data| data.remove::<Instant>(sampling_id));
+                            if let Ok((left, top)) = crate::windows_host::cursor_position() {
+                                *x = left;
+                                *y = top;
+                                changed = true;
+                            }
+                        } else {
+                            ui.label(format!(
+                                "İmleci hedefe taşı · {} sn",
+                                remaining.as_secs() + 1
+                            ));
+                            ui.ctx().request_repaint_after(Duration::from_millis(120));
+                        }
+                    } else if ui.button("İmleç konumunu al (3 sn)").clicked() {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(sampling_id, Instant::now() + Duration::from_secs(3))
+                        });
+                        ui.ctx().request_repaint_after(Duration::from_millis(120));
+                    }
                     ui.horizontal(|ui| {
                         changed |= ui
                             .add(egui::DragValue::new(x).prefix("X ").range(-65536..=65536))
@@ -1126,6 +1159,7 @@ fn trigger_editor(ui: &mut egui::Ui, trigger: &mut Option<crate::automation::Tri
 struct PhonePreview {
     adb: (String, String),
     opened: bool,
+    actual_size: bool,
     pending: Option<std::sync::mpsc::Receiver<Result<egui::ColorImage>>>,
     texture: Option<egui::TextureHandle>,
     next: Instant,
@@ -1137,6 +1171,7 @@ impl PhonePreview {
         Self {
             adb,
             opened: false,
+            actual_size: false,
             pending: None,
             texture: None,
             next: Instant::now(),
@@ -1145,19 +1180,23 @@ impl PhonePreview {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("M22 · USB");
+            ui.selectable_value(&mut self.actual_size, false, "Pencereye sığdır");
+            ui.selectable_value(&mut self.actual_size, true, "1:1 piksel");
+            if let Some(texture) = &self.texture {
+                let [width, height] = texture.size();
+                ui.label(format!("{width} × {height} px"));
+            }
+        });
         ui.separator();
-        ui.toggle_value(&mut self.opened, "M22 ekranını göster · USB");
-        if !self.opened {
-            self.texture = None;
-            return;
-        }
         if let Some(receiver) = &self.pending {
             match receiver.try_recv() {
                 Ok(Ok(image)) => {
                     self.texture = Some(ui.ctx().load_texture(
                         "m22-screen",
                         image,
-                        egui::TextureOptions::LINEAR,
+                        egui::TextureOptions::NEAREST,
                     ));
                     self.unavailable = false;
                     self.pending = None;
@@ -1182,11 +1221,29 @@ impl PhonePreview {
             });
         }
         if let Some(texture) = &self.texture {
-            let size = texture.size_vec2();
-            let width = ui.available_width().min(size.x);
-            ui.add(
-                egui::Image::new((texture.id(), size)).fit_to_exact_size(size * (width / size.x)),
-            );
+            let px = texture.size_vec2();
+            let area = ui.available_size();
+            if self.actual_size {
+                let physical = px / ui.ctx().pixels_per_point();
+                egui::ScrollArea::both()
+                    .id_salt("m22-pixel-scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Image::new((texture.id(), physical)).fit_to_exact_size(physical),
+                        );
+                    });
+            } else {
+                let scale = (area.x / px.x).min(area.y / px.y).max(0.01);
+                let fitted = px * scale;
+                let bounds = ui.allocate_space(area).1;
+                ui.painter().rect_filled(bounds, 4, Color32::BLACK);
+                ui.painter().image(
+                    texture.id(),
+                    Rect::from_center_size(bounds.center(), fitted),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
         } else {
             ui.label(if self.unavailable {
                 "USB bağlıyken ve KenshixDeck öndeyken görüntü alınır."

@@ -187,6 +187,7 @@ pub(crate) async fn start() -> Result<()> {
     if let Some((executable, serial)) = adb {
         tokio::spawn(adb_reverse(executable, serial));
     }
+    crate::metrics::start();
     crate::automation::launch(directory.join("deck.sqlite3"));
     let shared = Arc::new(Mutex::new(Host { db, pairing }));
     if !headless {

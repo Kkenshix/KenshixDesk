@@ -13,6 +13,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".ClockWakeActivity" android:exported="false"
+            android:excludeFromRecents="true" android:screenOrientation="reverseLandscape" />
         <activity-alias android:name=".DeckHome" android:targetActivity=".MainActivity"
             android:enabled="false" android:exported="true">
             <intent-filter>

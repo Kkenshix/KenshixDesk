@@ -18,6 +18,7 @@ internal class PerformanceView(
     private val handler = Handler(Looper.getMainLooper())
     private var attached = false
     private val processor = Gauge("CPU kullanımı")
+    private val graphics = Gauge("GPU kullanımı")
     private val memory = Gauge("RAM")
     private val disk = Gauge("Sistem diski")
     private val status = DeckUi.label(activity, "", 14, DeckUi.muted)
@@ -29,6 +30,8 @@ internal class PerformanceView(
                     val report = reply?.optJSONObject("measurements")
                     val percent = report?.optInt("cpu_percent", -1)?.takeIf { it in 0..100 }
                     processor.display(percent?.let { "$it%" } ?: "—", percent)
+                    val gpu = report?.optInt("gpu_percent", -1)?.takeIf { it in 0..100 }
+                    graphics.display(gpu?.let { "$it%" } ?: "—", gpu)
                     memory.display(report?.optJSONObject("memory"))
                     disk.display(report?.optJSONObject("system_disk"))
                     status.visibility = if (report == null) View.VISIBLE else View.GONE
@@ -45,7 +48,7 @@ internal class PerformanceView(
         setPadding(pad, dp(12), pad, pad)
         addView(DeckUi.screenHeading(activity, "PC Performansı", back))
         val metrics = LinearLayout(activity).apply { orientation = VERTICAL }
-        listOf(processor, memory, disk).forEach { gauge ->
+        listOf(processor, graphics, memory, disk).forEach { gauge ->
             metrics.addView(gauge, LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         }
         metrics.addView(status)

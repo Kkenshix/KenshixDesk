@@ -66,6 +66,8 @@ class MainActivity : Activity() {
     private var pageBadge: View? = null
     private lateinit var body: FrameLayout
     private lateinit var battery: BroadcastReceiver
+    private lateinit var screenPower: BroadcastReceiver
+    private var openClockOnWake = false
     private var batteryText = ""
     private var status = "Eşleştirme gerekli"
     private var deck = JSONObject().put("revision", 0).put("buttons", JSONArray())
@@ -79,7 +81,8 @@ class MainActivity : Activity() {
     private lateinit var header: View
     private var downX = 0f
     private var downY = 0f
-    private var idleSeconds = 30
+    private var idleSeconds = 15
+    private var standbySeconds = 45
     private var activeBrightness = -1f
     private var idleBrightness = 0.08f
     private var eatingGesture = false
@@ -97,12 +100,7 @@ class MainActivity : Activity() {
             updateAnimations()
         }
     }
-    private val showStandby = Runnable {
-        if (!inactive && ::link.isInitialized) {
-            standby = true
-            renderBody()
-        }
-    }
+    private val showStandby = Runnable { enterStandby() }
     private val clock = object : Runnable {
         override fun run() {
             if (::clockView.isInitialized) {
@@ -117,7 +115,8 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         activeBrightness = preferences.getFloat("active_brightness", -1f)
         idleBrightness = preferences.getFloat("idle_brightness", 0.08f)
-        idleSeconds = preferences.getInt("idle_seconds", 30).coerceIn(5, 300)
+        idleSeconds = preferences.getInt("dim_seconds", 15).coerceIn(5, 299)
+        standbySeconds = preferences.getInt("standby_seconds", 45).coerceIn(idleSeconds + 1, 300)
         deck = runCatching { JSONObject(preferences.getString("cached_deck", "").orEmpty()) }.getOrDefault(deck)
         currentPanel = layout().item(preferences.getString("current_panel", null))?.id
         status = if (preferences.contains("identity")) "Bağlantı bekleniyor" else "Eşleştirme gerekli"
@@ -154,6 +153,37 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             registerReceiver(battery, filter)
         }
+        screenPower = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                    openClockOnWake = true
+                    if (!standby && kiosk.enabled() && kiosk.locked()) {
+                        handler.postDelayed({
+                            val power = getSystemService(android.os.PowerManager::class.java)
+                            if (openClockOnWake && !isDestroyed && !power.isInteractive && kiosk.locked()) {
+                                runCatching {
+                                    startActivity(Intent(this@MainActivity, ClockWakeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION))
+                                }
+                            }
+                        }, 170)
+                    }
+                }
+                if (intent.action == Intent.ACTION_SCREEN_ON && !inactive && openClockOnWake) {
+                    openClockOnWake = false
+                    enterStandby()
+                }
+            }
+        }
+        val powerEvents = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(screenPower, powerEvents, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(screenPower, powerEvents)
+        }
         handler.post(clock)
         wake()
     }
@@ -168,7 +198,10 @@ class MainActivity : Activity() {
         super.onStart()
         inactive = false
         link.pause(false)
-        wake()
+        if (openClockOnWake) {
+            openClockOnWake = false
+            enterStandby()
+        } else wake()
     }
 
     override fun onStop() {
@@ -181,6 +214,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         unregisterReceiver(battery)
+        unregisterReceiver(screenPower)
         link.close()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -246,6 +280,16 @@ class MainActivity : Activity() {
         return super.dispatchTouchEvent(event)
     }
 
+    private fun enterStandby() {
+        if (inactive || !::link.isInitialized) return
+        handler.removeCallbacks(dim)
+        handler.removeCallbacks(showStandby)
+        dimmed = true
+        standby = true
+        brightness(idleBrightness)
+        renderBody()
+    }
+
     private fun wake() {
         if (standby) {
             standby = false
@@ -257,7 +301,7 @@ class MainActivity : Activity() {
         handler.removeCallbacks(dim)
         handler.postDelayed(dim, idleSeconds * 1000L)
         handler.removeCallbacks(showStandby)
-        handler.postDelayed(showStandby, 300_000L)
+        handler.postDelayed(showStandby, standbySeconds * 1000L)
     }
 
     private fun updateAnimations() {
@@ -297,7 +341,13 @@ class MainActivity : Activity() {
             addView(statusView)
         }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        clockView = label("", 12, muted).apply { gravity = Gravity.END }
+        clockView = label("", 12, muted).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(42)
+            setPadding(dp(8), 0, dp(8), 0)
+            contentDescription = "Saat ve performans ekranı"
+            setOnClickListener { enterStandby() }
+        }
         top.addView(clockView, LinearLayout.LayoutParams(-2, -2))
         val menu = button("⋮") { openMenu() }.apply {
             contentDescription = "Ayarlar"
@@ -747,23 +797,27 @@ class MainActivity : Activity() {
         }
         val normal = number("Aktif parlaklık % (0: Android ayarı)", if (activeBrightness < 0) 0 else (activeBrightness * 100).toInt())
         val idle = number("Boşta parlaklık %", (idleBrightness * 100).toInt())
-        val delay = number("Boşta bekleme süresi (saniye)", idleSeconds)
+        val delay = number("Kararma süresi (saniye)", idleSeconds)
+        val clockDelay = number("Saat ekranına geçiş (saniye)", standbySeconds)
         DeckUi.dialog(this).setTitle("Ekran").setView(DeckUi.scrollForm(panel)).setNegativeButton("Vazgeç", null)
             .setPositiveButton("Kaydet") { _, _ ->
                 val normalValue = normal.text.toString().toIntOrNull()
                 val idleValue = idle.text.toString().toIntOrNull()
                 val delayValue = delay.text.toString().toIntOrNull()
+                val clockValue = clockDelay.text.toString().toIntOrNull()
                 if (normalValue == null || normalValue !in 0..100 ||
                     idleValue == null || idleValue !in 5..35 ||
-                    delayValue == null || delayValue !in 5..300) {
+                    delayValue == null || delayValue !in 5..299 || clockValue == null || clockValue !in (delayValue + 1)..300) {
                     notify("Parlaklık ve süre değerlerini kontrol et.")
                     return@setPositiveButton
                 }
                 activeBrightness = if (normalValue == 0) -1f else normalValue / 100f
                 idleBrightness = idleValue / 100f
                 idleSeconds = delayValue
+                standbySeconds = clockValue
                 preferences.edit().putFloat("active_brightness", activeBrightness)
-                    .putFloat("idle_brightness", idleBrightness).putInt("idle_seconds", idleSeconds).apply()
+                    .putFloat("idle_brightness", idleBrightness).putInt("dim_seconds", idleSeconds)
+                    .putInt("standby_seconds", standbySeconds).apply()
                 wake()
             }.showDeck()
     }

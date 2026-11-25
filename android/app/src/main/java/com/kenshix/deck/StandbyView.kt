@@ -3,32 +3,65 @@ package com.kenshix.deck
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.widget.LinearLayout
+import android.widget.TextView
 import org.json.JSONObject
 import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 
 internal class StandbyView(context: Context, private val link: DeckLink) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
     private val clock = DeckUi.label(context, "", 62, DeckUi.text, 600)
     private val date = DeckUi.label(context, "", 19, DeckUi.muted, 500)
-    private val readings = DeckUi.label(context, "", 17, DeckUi.accent, 550)
+    private val status = DeckUi.label(context, "PC verileri alınıyor", 12, DeckUi.muted, 500)
+    private val cpu = Gauge(context, "CPU")
+    private val gpu = Gauge(context, "GPU")
+    private val ram = Gauge(context, "RAM")
+    private val instruments = LinearLayout(context)
+    private val content = LinearLayout(context)
+    private val local = Locale.forLanguageTag("tr-TR")
+    private val moment = DateFormat.getTimeInstance(DateFormat.SHORT, local)
+    private val day = DateFormat.getDateInstance(DateFormat.FULL, local)
+    private var lastSample = 0L
+    private var minute = -1L
+
     private val clockUpdate = object : Runnable {
         override fun run() {
             val now = Date()
-            clock.text = DateFormat.getTimeInstance(DateFormat.SHORT).format(now)
-            date.text = DateFormat.getDateInstance(DateFormat.FULL).format(now)
+            clock.text = moment.format(now)
+            date.text = day.format(now)
+            val currentMinute = now.time / 60_000
+            if (minute != currentMinute) {
+                minute = currentMinute
+                val offsets = listOf(0, 7, -6, 4, -4)
+                content.translationX = DeckUi.dp(context, offsets[(minute % offsets.size).toInt()]).toFloat()
+                content.translationY = DeckUi.dp(context, offsets[((minute + 2) % offsets.size).toInt()]).toFloat()
+            }
             handler.postDelayed(this, 1000)
         }
     }
+
     private val refresh = object : Runnable {
         override fun run() {
             link.request(message("metrics")) { response ->
                 handler.post {
                     if (!isAttachedToWindow) return@post
-                    showMetrics(response?.optJSONObject("measurements"))
-                    handler.postDelayed(this, 5000)
+                    val report = response?.optJSONObject("measurements")
+                    val now = SystemClock.elapsedRealtime()
+                    if (report != null) {
+                        lastSample = now
+                        showMetrics(report)
+                        status.text = "PC · Canlı"
+                        status.setTextColor(DeckUi.success)
+                    } else {
+                        status.setTextColor(DeckUi.muted)
+                        status.text = if (lastSample > 0 && now - lastSample < 8000) "Son ölçüm gösteriliyor" else "PC bağlantısı bekleniyor"
+                        if (lastSample == 0L || now - lastSample >= 8000) showMetrics(null)
+                    }
+                    handler.postDelayed(this, if (report == null) 900 else 2300)
                 }
             }
         }
@@ -38,20 +71,31 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
         orientation = VERTICAL
         gravity = Gravity.CENTER
         setBackgroundColor(DeckUi.BLACK)
-        addView(clock)
-        addView(date, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 8) })
-        addView(readings, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 24) })
+        content.orientation = VERTICAL
+        content.gravity = Gravity.CENTER
+        content.addView(clock)
+        content.addView(date, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 8) })
+        instruments.gravity = Gravity.CENTER
+        for (meter in listOf(cpu, gpu, ram)) {
+            instruments.addView(meter.view, LayoutParams(DeckUi.dp(context, 108), -2).apply {
+                marginStart = DeckUi.dp(context, 5)
+                marginEnd = DeckUi.dp(context, 5)
+            })
+        }
+        content.addView(instruments, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 23) })
+        content.addView(status, LayoutParams(-2, -2).apply { topMargin = DeckUi.dp(context, 14) })
+        addView(content, LayoutParams(-2, -2))
         showMetrics(null)
     }
 
     private fun showMetrics(report: JSONObject?) {
-        fun format(value: Int?) = value?.takeIf { it in 0..100 }?.let { "$it%" } ?: "—"
-        val ram = report?.optJSONObject("memory")?.let {
+        cpu.render(report?.optInt("cpu_percent", -1))
+        gpu.render(report?.optInt("gpu_percent", -1))
+        val memory = report?.optJSONObject("memory")?.let {
             val total = it.optLong("total")
             if (total > 0) (100.0 * it.optLong("used") / total).toInt() else null
         }
-        readings.text = "CPU ${format(report?.optInt("cpu_percent", -1))}   " +
-            "GPU ${format(report?.optInt("gpu_percent", -1))}   RAM ${format(ram)}"
+        ram.render(memory)
     }
 
     override fun onAttachedToWindow() {
@@ -63,5 +107,24 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
     override fun onDetachedFromWindow() {
         handler.removeCallbacksAndMessages(null)
         super.onDetachedFromWindow()
+    }
+
+    private class Gauge(context: Context, private val title: String) {
+        val view = LinearLayout(context).apply {
+            orientation = VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(DeckUi.dp(context, 8), DeckUi.dp(context, 8), DeckUi.dp(context, 8), DeckUi.dp(context, 8))
+            background = DeckUi.shape(context, DeckUi.panel, 13)
+            addView(DeckUi.label(context, title, 12, DeckUi.muted, 600))
+        }
+        private val value: TextView = DeckUi.label(context, "—", 24, DeckUi.accent, 650)
+        init { view.addView(value) }
+        fun render(reading: Int?) {
+            val valid = reading?.takeIf { it in 0..100 }
+            val text = valid?.let { "$it%" } ?: "—"
+            if (value.text == text && value.contentDescription != null) return
+            value.text = text
+            value.contentDescription = if (valid == null) "$title verisi yok" else "$title yüzde $valid"
+        }
     }
 }

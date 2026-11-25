@@ -10,8 +10,8 @@ use std::{
 use windows::{
     Win32::System::Performance::{
         PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
-        PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA, PdhAddEnglishCounterW, PdhCloseQuery,
-        PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+        PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA, PdhAddCounterW, PdhAddEnglishCounterW,
+        PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
     },
     core::{PCWSTR, w},
 };
@@ -37,18 +37,16 @@ fn sample() {
         if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
             return;
         }
-        if PdhAddEnglishCounterW(
-            query,
-            w!(r"\GPU Engine(*)\Utilization Percentage"),
-            0,
-            &mut counter,
-        ) != 0
-            || PdhCollectQueryData(query) != 0
+        let path = w!(r"\GPU Engine(*)\Utilization Percentage");
+        if PdhAddCounterW(query, path, 0, &mut counter) != 0
+            && PdhAddEnglishCounterW(query, path, 0, &mut counter) != 0
         {
             PdhCloseQuery(query);
             return;
         }
     }
+    // SAFETY: The query now owns its GPU counter and needs an initial sample.
+    let _ = unsafe { PdhCollectQueryData(query) };
     loop {
         std::thread::sleep(Duration::from_secs(2));
         // SAFETY: query remains open and the counter is associated with it.
