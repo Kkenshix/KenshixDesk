@@ -22,7 +22,7 @@ Ana panelden sağa kaydırınca **Ses Mikseri** sayfası açılır. Sola kaydır
 
 Ana panele eklenen yatay **Spotify** kartı oynatma kumandasını ve Spotify'ın Windows ses oturumunu açar. Spotify kendi ses oturumu var olduğu sürece pencere küçültülmüşken de ses ve sessize alma çalışır. Karıştırma, tekrar ve parça konumu uygulamanın Windows'a sunduğu ölçüde kullanılabilir. Spotify ses oturumu kapanmışsa bu kart ve saat ekranındaki Spotify kaydırıcısı Windows genel sesine geçmez.
 
-**OBS Kaydı** tek tuşla kaydı başlatır ve durdurur. OBS Studio ile WebSocket bağlantısı etkin olduğunda tuş geçerli kayıt durumunu gösterir. Discord kısayolları kullanılıyorsa masaüstü Discord'da **Tuş Atamaları** bölümünde sağırlaştırma için Page Down, mikrofon için Page Up eşlenir.
+Bu panelde **OBS Kaydı** F9 gönderir. OBS kullanırken kaydı başlatmak ve durdurmak için F9 kısayolunu OBS’nin kendi tuş atamalarında kullan. Discord kısayolları kullanılıyorsa masaüstü Discord'da **Tuş Atamaları** bölümünde sağırlaştırma için Page Down, mikrofon için Page Up eşlenir.
 
 ## Stable yayın kurulumu
 
