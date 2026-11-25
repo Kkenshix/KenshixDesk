@@ -1,48 +1,41 @@
 package com.kenshix.deck
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
+import android.media.MediaCodec
+import android.media.MediaFormat
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.view.Gravity
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
+import okio.ByteString
 import org.json.JSONObject
+import java.util.UUID
 
-internal data class BrowserOffer(val id: String, val site: String, val key: String, val seconds: Int,
-    val positionMs: Int, val volume: Int, val playing: Boolean,
+internal data class BrowserOffer(
+    val id: String, val site: String, val width: Int, val height: Int, val volume: Int,
 ) {
     companion object {
-        private val idPattern = Regex("[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
-        private val youtube = Regex("[A-Za-z0-9_-]{11}")
-        private val kick = Regex("[a-z0-9_-]{2,50}")
-
         fun parse(json: JSONObject): BrowserOffer? {
             val id = json.optString("id")
+            val canonical = runCatching { UUID.fromString(id).toString() }.getOrNull()
             val site = json.optString("site")
-            val key = json.optString("key")
-            val seconds = json.optInt("seconds", -1)
-            if (!idPattern.matches(id) || seconds !in 0..86_400) return null
-            val valid = when (site) {
-                "youtube" -> youtube.matches(key)
-                "kick" -> kick.matches(key)
-                else -> false
-            }
-            val position = json.optInt("position_ms", seconds * 1_000)
-            val volume = json.optInt("volume", 100)
-            if (!valid || position !in 0..86_400_000 || volume !in 0..100) return null
-            return BrowserOffer(id, site, key, seconds, position, volume, json.optBoolean("playing", true))
+            val width = json.optInt("width")
+            val height = json.optInt("height")
+            val volume = json.optInt("volume", -1)
+            if (id != canonical || site !in setOf("youtube", "kick") || width !in 2..960 ||
+                height !in 2..540 || width % 2 != 0 || height % 2 != 0 || volume !in 0..100) return null
+            return BrowserOffer(id, site, width, height, volume)
         }
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 internal class BrowserVideoPlayer(
     context: Context,
     val offer: BrowserOffer,
@@ -50,62 +43,15 @@ internal class BrowserVideoPlayer(
     private val setVolume: (Int) -> Unit,
 ) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
-    private var released = false
-    private var loaded = false
-    private val youtube = offer.site == "youtube"
-    private val origin = "https://" + context.packageName
-    private val base = "$origin/"
-    private var source = offer
+    private val service = if (offer.site == "youtube") "YouTube" else "Kick"
+    private val summary = DeckUi.label(context, service, 13, DeckUi.muted, 550)
     private var dragging = false
-    private var pendingVolume: Int? = null
-    private var volumePendingUntil = 0L
-    private val summary = DeckUi.label(context, if (youtube) "YouTube" else "Kick · Canlı yayın", 13, DeckUi.muted, 550)
-    private val web = WebView(context).apply {
-        setBackgroundColor(DeckUi.BLACK)
-        require(WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO))
-        WebViewCompat.setAudioMuted(this, true)
-        settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            allowFileAccess = false
-            allowContentAccess = false
-            javaScriptCanOpenWindowsAutomatically = false
-            setSupportMultipleWindows(false)
-        }
-        webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val uri = request.url
-                return request.isForMainFrame || uri.scheme != "https" || uri.host !in
-                    setOf("www.youtube.com", "player.kick.com")
-            }
-        }
+    private val decoder = VideoDecoder(offer.width, offer.height) {
+        handler.post { summary.text = "Görüntü çözülemedi" }
     }
 
-    private val status = object : Runnable {
-        override fun run() {
-            if (released || !isAttachedToWindow) return
-            web.evaluateJavascript("window.deckPlayerState || ''") { value ->
-                if (!released && isAttachedToWindow) {
-                    when (value) {
-                        "\"playing\"" -> {
-                            summary.text = "YouTube · Sessiz görüntü"
-                            syncYouTube()
-                        }
-                        "\"blocked\"" -> summary.text = "YouTube · Oynat düğmesine dokun"
-                        "\"error\"" -> summary.text = "YouTube · Bu video gömülü oynatılamıyor"
-                    }
-                    if (value != "\"playing\"" && value != "\"error\"") handler.postDelayed(this, 520)
-                }
-            }
-        }
-    }
-
-    private val sendVolume = Runnable {
-        pendingVolume?.let(setVolume)
-    }
-
-    private val volume = SeekBar(context).apply {
+    private val sendVolume: Runnable = Runnable { setVolume(volume.progress) }
+    private val volume: SeekBar = SeekBar(context).apply {
         contentDescription = "PC video sesi"
         max = 100
         progress = offer.volume
@@ -114,13 +60,10 @@ internal class BrowserVideoPlayer(
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
                 if (fromUser) {
-                    pendingVolume = value
-                    volumePendingUntil = android.os.SystemClock.elapsedRealtime() + 2600
                     handler.removeCallbacks(sendVolume)
-                    handler.postDelayed(sendVolume, 120)
+                    handler.postDelayed(sendVolume, 90)
                 }
             }
-
             override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
             override fun onStopTrackingTouch(bar: SeekBar) {
                 dragging = false
@@ -130,24 +73,34 @@ internal class BrowserVideoPlayer(
         })
     }
 
-    fun update(offer: BrowserOffer) {
-        source = offer
-        if (!dragging && (pendingVolume == offer.volume || android.os.SystemClock.elapsedRealtime() >= volumePendingUntil)) {
-            pendingVolume = null
-            volume.progress = offer.volume
-        }
-        if (youtube) syncYouTube()
-    }
-
-    private fun syncYouTube() {
-        if (released || !loaded || !isAttachedToWindow) return
-        web.evaluateJavascript("window.deckSync?.(${source.positionMs / 1000.0}, ${source.playing})", null)
-    }
-
     init {
         orientation = VERTICAL
         setBackgroundColor(DeckUi.BLACK)
-        addView(web, LayoutParams(-1, 0, 1f))
+        addView(object : FrameLayout(context) {
+            private val video = SurfaceView(context).also { child ->
+                addView(child)
+                child.holder.addCallback(object : SurfaceHolder.Callback {
+                    override fun surfaceCreated(holder: SurfaceHolder) { decoder.surface(holder.surface) }
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+                    override fun surfaceDestroyed(holder: SurfaceHolder) { decoder.surface(null) }
+                })
+            }
+
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val width = MeasureSpec.getSize(widthMeasureSpec)
+                val height = MeasureSpec.getSize(heightMeasureSpec)
+                val ratio = minOf(width.toDouble() / offer.width, height.toDouble() / offer.height)
+                video.measure(MeasureSpec.makeMeasureSpec((offer.width * ratio).toInt(), MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec((offer.height * ratio).toInt(), MeasureSpec.EXACTLY))
+                setMeasuredDimension(width, height)
+            }
+
+            override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+                val x = (right - left - video.measuredWidth) / 2
+                val y = (bottom - top - video.measuredHeight) / 2
+                video.layout(x, y, x + video.measuredWidth, y + video.measuredHeight)
+            }
+        }, LayoutParams(-1, 0, 1f))
         addView(LinearLayout(context).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), 0, dp(12), 0)
@@ -159,70 +112,122 @@ internal class BrowserVideoPlayer(
         }, LayoutParams(-1, dp(50)))
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        post {
-            if (!released && isAttachedToWindow && !loaded) {
-                loaded = true
-                web.loadDataWithBaseURL(base, html(), "text/html", "UTF-8", base)
-                if (youtube) handler.postDelayed(status, 520)
+    fun accept(frame: ByteString) = decoder.enqueue(frame)
+
+    fun updateVolume(percent: Int) {
+        if (!dragging && percent in 0..100) volume.progress = percent
+    }
+
+    fun updatePaused(paused: Boolean) {
+        summary.text = if (paused) "$service · PC’de duraklatıldı" else service
+    }
+
+    fun release() {
+        handler.removeCallbacksAndMessages(null)
+        decoder.close()
+    }
+
+    private fun dp(value: Int) = DeckUi.dp(context, value)
+}
+
+private class VideoDecoder(
+    private val width: Int,
+    private val height: Int,
+    private val failed: () -> Unit,
+) {
+    private val thread = HandlerThread("DeckVideo").apply { start() }
+    private val handler = Handler(thread.looper)
+    private val frames = ArrayDeque<ByteString>()
+    private val inputs = ArrayDeque<Int>()
+    private var needsKey = true
+    private var drainPosted = false
+    private var codec: MediaCodec? = null
+    @Volatile private var closed = false
+
+    fun enqueue(frame: ByteString) {
+        if (closed || frame.size !in 10..(256 * 1024) || frame[0].toInt() !in 0..1) return
+        synchronized(frames) {
+            if (frames.size >= 12) {
+                frames.clear()
+                needsKey = true
+            }
+            if (needsKey && frame[0].toInt() != 1) return
+            needsKey = false
+            frames.addLast(frame)
+            if (drainPosted) return
+            drainPosted = true
+        }
+        handler.post {
+            synchronized(frames) { drainPosted = false }
+            drain()
+        }
+    }
+
+    fun surface(output: Surface?) = handler.post {
+        if (closed) return@post
+        val previous = codec != null
+        clearCodec()
+        if (previous) synchronized(frames) { frames.clear(); needsKey = true }
+        if (output?.isValid != true) return@post
+        runCatching {
+            val next = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
+            codec = next
+            next.setCallback(object : MediaCodec.Callback() {
+                override fun onInputBufferAvailable(source: MediaCodec, index: Int) {
+                    if (codec === source) { inputs.addLast(index); drain() }
+                }
+                override fun onOutputBufferAvailable(source: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                    if (codec === source) runCatching { source.releaseOutputBuffer(index, true) }
+                }
+                override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
+                    if (codec === source) { clearCodec(); failed() }
+                }
+                override fun onOutputFormatChanged(source: MediaCodec, format: MediaFormat) = Unit
+            }, handler)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024)
+            next.configure(format, output, null, 0)
+            next.start()
+        }.onFailure { clearCodec(); failed() }
+    }
+
+    private fun drain() {
+        val active = codec ?: return
+        if (closed) return
+        while (inputs.isNotEmpty()) {
+            val frame = synchronized(frames) { frames.removeFirstOrNull() } ?: return
+            val index = inputs.removeFirst()
+            runCatching {
+                val bytes = frame.toByteArray()
+                var time = 0L
+                for (i in 1..8) time = (time shl 8) or (bytes[i].toLong() and 255)
+                val buffer = checkNotNull(active.getInputBuffer(index))
+                buffer.clear()
+                buffer.put(bytes, 9, bytes.size - 9)
+                active.queueInputBuffer(index, 0, bytes.size - 9, time,
+                    if (bytes[0].toInt() == 1) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+            }.onFailure {
+                clearCodec()
+                failed()
+                return
             }
         }
     }
 
-    override fun onDetachedFromWindow() {
-        handler.removeCallbacks(status)
-        super.onDetachedFromWindow()
+    private fun clearCodec() {
+        val old = codec
+        codec = null
+        inputs.clear()
+        if (old != null) runCatching { old.release() }
     }
 
-    fun release() {
-        if (released) return
-        released = true
-        handler.removeCallbacksAndMessages(null)
-        web.stopLoading()
-        removeView(web)
-        web.destroy()
+    fun close() {
+        if (closed) return
+        closed = true
+        handler.post {
+            clearCodec()
+            synchronized(frames) { frames.clear() }
+            thread.quitSafely()
+        }
     }
-
-    private fun html(): String {
-        val player = if (youtube) """
-            <div id="video"></div>
-            <script>
-            window.onYouTubeIframeAPIReady = function () {
-                const player = new YT.Player('video', {
-                    videoId: '${offer.key}',
-                    playerVars: {autoplay: 1, start: ${offer.seconds}, playsinline: 1, origin: '$origin'},
-                    events: {
-                        onReady: function (event) { event.target.mute(); },
-                        onStateChange: function (event) {
-                            if (event.data === 1) window.deckPlayerState = 'playing';
-                        },
-                        onAutoplayBlocked: function () { window.deckPlayerState = 'blocked'; },
-                        onError: function () { window.deckPlayerState = 'error'; }
-                    }
-                });
-                window.deckSync = function(seconds, playing) {
-                    if (typeof player.getCurrentTime !== 'function' || window.deckPlayerState !== 'playing') return;
-                    const time = player.getCurrentTime();
-                    if (typeof time === 'number' && Math.abs(seconds - time) > 1.0) player.seekTo(seconds, true);
-                    const state = player.getPlayerState();
-                    if (!playing && state === 1) player.pauseVideo();
-                    if (playing && state === 2) player.playVideo();
-                };
-            };
-            </script>
-            <script src="https://www.youtube.com/iframe_api"></script>
-        """ else """
-            <iframe title="Kick" src="https://player.kick.com/${offer.key}?autoplay=true&amp;muted=true&amp;allowfullscreen=false"
-                allow="autoplay; encrypted-media" scrolling="no"></iframe>
-        """
-        return """
-            <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-            <meta name="referrer" content="strict-origin-when-cross-origin">
-            <style>html,body,iframe,#video{width:100%;height:100%;margin:0;border:0;background:#000;overflow:hidden}</style>
-            </head><body>${player}</body></html>
-        """
-    }
-
-    private fun dp(value: Int) = DeckUi.dp(context, value)
 }

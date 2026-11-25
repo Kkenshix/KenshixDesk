@@ -83,7 +83,6 @@ class MainActivity : Activity() {
     private var showingVideo = false
     private var browserPlayer: BrowserVideoPlayer? = null
     private var queuedVideo: BrowserOffer? = null
-    private var lastBrowserVideo: String? = null
     private var showingWindows = false
     private var showingInput = false
     private var mediaGesture = false
@@ -147,18 +146,10 @@ class MainActivity : Activity() {
                 updateConnection()
                 if (changed || (snapshot != null && !mixer && !obs && !performance)) renderBody()
             }
-        }, { message -> handler.post { if (!isDestroyed) notify(message) } }, { video ->
-            handler.post {
-                if (!isDestroyed) {
-                    queuedVideo = video?.let(BrowserOffer::parse)
-                    val queued = queuedVideo
-                    if (queued != null && browserPlayer?.offer?.id == queued.id) {
-                        browserPlayer?.update(queued)
-                    } else {
-                        openQueuedVideo()
-                    }
-                }
-            }
+        }, { message -> handler.post { if (!isDestroyed) notify(message) } }, { event ->
+            handler.post { if (!isDestroyed) handleBrowserVideo(event) }
+        }, { frame ->
+            handler.post { browserPlayer?.accept(frame) }
         })
         render()
         battery = object : BroadcastReceiver() {
@@ -386,25 +377,36 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun handleBrowserVideo(event: JSONObject) {
+        val id = event.optString("id")
+        when (event.optString("type")) {
+            "begin" -> {
+                queuedVideo = event.optJSONObject("video")?.let(BrowserOffer::parse)
+                openQueuedVideo()
+            }
+            "end", "lost" -> {
+                val lost = event.optString("type") == "lost"
+                if (lost || queuedVideo?.id == id) queuedVideo = null
+                if (lost || browserPlayer?.offer?.id == id) finishBrowserVideo()
+            }
+            "volume" -> browserPlayer?.takeIf { it.offer.id == id }?.updateVolume(event.optInt("percent"))
+            "paused" -> browserPlayer?.takeIf { it.offer.id == id }?.updatePaused(event.optBoolean("value"))
+            "unavailable" -> notify("Opera bu videonun görüntüsünü paylaşamadı.")
+        }
+    }
+
     private fun openQueuedVideo() {
         val offer = queuedVideo ?: return
-        if (inactive || openDialogs > 0 || saving || lastBrowserVideo == offer.id ||
+        if (inactive || openDialogs > 0 || saving || browserPlayer?.offer?.id == offer.id ||
             preferences.getString("closed_browser_video", null) == offer.id) return
-        lastBrowserVideo = offer.id
-        val next = runCatching {
-            BrowserVideoPlayer(this, offer, ::closeBrowserVideo) { volume ->
-                link.request(message("browser_video_volume").put("id", offer.id).put("percent", volume)) {
-                    if (it?.optBoolean("accepted") != true) handler.post {
-                        if (browserPlayer?.offer?.id == offer.id) notify("PC video sesi ayarlanamadı.")
-                    }
+        browserPlayer?.release()
+        browserPlayer = BrowserVideoPlayer(this, offer, ::closeBrowserVideo) { volume ->
+            link.request(message("browser_video_volume").put("id", offer.id).put("percent", volume)) {
+                if (it?.optBoolean("accepted") != true) handler.post {
+                    if (browserPlayer?.offer?.id == offer.id) notify("PC video sesi ayarlanamadı.")
                 }
             }
-        }.getOrElse {
-            notify("Telefonun video oynatıcısı açılamadı.")
-            return
         }
-        browserPlayer?.release()
-        browserPlayer = next
         val wasStandby = standby
         wake()
         if (!wasStandby) renderBody()
@@ -413,7 +415,13 @@ class MainActivity : Activity() {
     private fun closeBrowserVideo() {
         val player = browserPlayer ?: return
         preferences.edit().putString("closed_browser_video", player.offer.id).apply()
+        queuedVideo = null
         link.request(message("close_browser_video").put("id", player.offer.id)) {}
+        finishBrowserVideo()
+    }
+
+    private fun finishBrowserVideo() {
+        val player = browserPlayer ?: return
         player.release()
         browserPlayer = null
         renderBody()
@@ -516,7 +524,7 @@ class MainActivity : Activity() {
             mixer -> "mixer"
             else -> currentPanel ?: "deck"
         }
-        val animate = lastDestination != destination
+        val animate = lastDestination != destination && destination != "browser_video" && lastDestination != "browser_video"
         lastDestination = destination
         renderProfileStrip()
         fun display(view: View) {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "KenshixDeck Video",
-  "version": "1.0.0",
-  "description": "Arka plana geçen YouTube videolarını ve Kick canlı yayınlarını eşleştirilmiş M22’ye devreder.",
+  "version": "1.1.0",
+  "description": "Opera’daki video karelerini eşleştirilmiş M22’ye yerel olarak gönderir.",
   "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": {"service_worker": "worker.js"},

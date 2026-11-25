@@ -28,7 +28,7 @@ Bu panelde **OBS Kaydı** F9 gönderir. OBS kullanırken kaydı başlatmak ve du
 
 Windows uygulamasını bir kez `--setup-video-browser` ile çalıştır. Çıktıdaki klasörü Opera’da **Uzantılar → Geliştirici modu → Paketlenmemiş uzantıyı yükle** üzerinden seç. İlk kurulumdan sonra KenshixDeck Windows uygulamasını yeniden başlat ve açık YouTube veya Kick sekmesini bir kez yenile.
 
-Opera’da oynayan son desteklenen sekmeyi arka plana attığında video M22’de açılır. **Kapat** panele döndürür. Alt çubuktaki **PC sesi**, seçili Opera videosunun sesini değiştirir. M22’deki oynatıcı sessizdir ve ses PC’de çalmaya devam eder. YouTube, Opera’daki konumu izler. Kick, kanalın canlı yayınını kendi oynatıcısıyla açtığı için iki cihazın canlı yayın gecikmesi farklı olabilir. YouTube’da gömülü oynatmaya kapalı videolar ve Kick arşivleri desteklenmez.
+Opera’da oynayan YouTube veya Kick sekmesinden ayrıldığında, tarayıcının video kareleri M22’ye yerel olarak aktarılır. Telefon siteden ikinci bir oynatma açmaz ve ses PC’de kalır. Kaynak sekmeye dönünce ana panel geri gelir. Duraklatma son kareyi ekranda bırakır ve PC’de video devam edince yeni kareler gelir. Alt çubukta **Kapat** ve **PC sesi** bulunur. Tarayıcının yakalamaya izin vermediği korumalı videolar aktarılmaz. Uzantı güncellendiğinde Opera’daki uzantıyı ve açık video sekmesini bir kez yenile.
 
 ## Stable yayın kurulumu
 

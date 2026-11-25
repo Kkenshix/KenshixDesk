@@ -42,6 +42,5 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.webkit:webkit:1.11.0")
     testImplementation("junit:junit:4.13.2")
 }

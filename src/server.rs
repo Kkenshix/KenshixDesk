@@ -255,7 +255,10 @@ Build: {}",
             .recv_timeout(crate::tray::READY_TIMEOUT)
             .context("sistem tepsisi başlatılamadı")?;
     }
-    let app = Router::new().route("/v1", get(upgrade)).with_state(shared);
+    let app = Router::new()
+        .route("/v1", get(upgrade))
+        .route("/video", get(upgrade_video))
+        .with_state(shared);
     let service = app.clone().into_make_service();
     let usb = axum_server::from_tcp_rustls(usb_listener, tls.clone())?.serve(service);
     println!("KenshixDeck USB portu: {PORT}");
@@ -287,6 +290,38 @@ async fn upgrade(State(host): State<Shared>, ws: WebSocketUpgrade) -> Response {
     ws.max_frame_size(MAX_MESSAGE)
         .max_message_size(MAX_MESSAGE)
         .on_upgrade(move |socket| session(socket, host))
+}
+
+async fn upgrade_video(State(host): State<Shared>, ws: WebSocketUpgrade) -> Response {
+    ws.max_frame_size(2048)
+        .max_message_size(2048)
+        .on_upgrade(move |mut socket| async move {
+            let hello = tokio::time::timeout(HANDSHAKE_TIMEOUT, receive(&mut socket)).await;
+            let Ok(Some(Request::Hello {
+                version: VERSION,
+                token,
+            })) = hello
+            else {
+                return;
+            };
+            let digest = hash(token.as_bytes());
+            let auth_host = Arc::clone(&host);
+            let verify = move || {
+                let auth_host = Arc::clone(&auth_host);
+                async move {
+                    with_host(auth_host, move |host| authorized(&host.db, &digest))
+                        .await
+                        .unwrap_or(false)
+                }
+            };
+            if !verify().await {
+                return;
+            }
+            let video = with_host(Arc::clone(&host), |host| Ok(host.video.clone())).await;
+            if let Ok(video) = video {
+                video.receive_phone(socket, verify).await;
+            }
+        })
 }
 
 async fn receive(socket: &mut WebSocket) -> Option<Request> {
@@ -377,7 +412,7 @@ async fn session(mut socket: WebSocket, host: Shared) {
     };
     let initial = with_host(Arc::clone(&host), move |host| {
         if authorized(&host.db, &digest)? {
-            Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?,"browser_video":host.video.snapshot()}))
+            Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?}))
         } else {
             Ok(json!({"type":"error","code":"unauthorized"}))
         }
@@ -398,7 +433,7 @@ async fn session(mut socket: WebSocket, host: Shared) {
             }
             match request {
                 Request::Snapshot => Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?,
-                    "alert":crate::automation::alert(&host.db),"browser_video":host.video.snapshot()})),
+                    "alert":crate::automation::alert(&host.db)})),
                 Request::CloseBrowserVideo { id } => {
                     host.video.close(id);
                     Ok(json!({"type":"browser_video_closed"}))

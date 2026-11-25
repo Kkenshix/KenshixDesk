@@ -6,6 +6,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import okio.ByteString
 import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -53,7 +54,7 @@ private fun client(fingerprint: String): OkHttpClient {
         .build()
 }
 
-private class Connection(client: OkHttpClient, address: String) {
+private class Connection(client: OkHttpClient, val address: String) {
     val usb = address == USB
     private sealed interface Event {
         data class Text(val text: String) : Event
@@ -89,7 +90,8 @@ internal class DeckLink(
     private val credentials: Credentials,
     private val update: (String, JSONObject?) -> Unit,
     private val report: (String) -> Unit,
-    private val browserVideo: (JSONObject?) -> Unit
+    private val browserVideo: (JSONObject) -> Unit,
+    private val browserFrame: (ByteString) -> Unit
 ) {
     private val worker = ScheduledThreadPoolExecutor(1)
     private var identity = runCatching { credentials.load() }.getOrNull()
@@ -102,7 +104,7 @@ internal class DeckLink(
     @Volatile private var lastLatency: Long? = null
     @Volatile private var lastLoss: String? = null
     private var deckRevision = -1L
-    private var videoSignature: String? = null
+    @Volatile private var videoSocket: WebSocket? = null
 
     fun diagnostics(): String {
         val active = connection
@@ -204,6 +206,8 @@ internal class DeckLink(
         paused = true
         worker.execute {
             connection?.close()
+            videoSocket?.cancel()
+            videoSocket = null
             client?.dispatcher?.executorService?.shutdown()
             worker.shutdown()
         }
@@ -263,15 +267,10 @@ internal class DeckLink(
         deckRevision = -1
         nextUsbProbe = android.os.SystemClock.elapsedRealtime() + 3000
         snapshot(online.first, online.second)
+        startVideo(online.first)
     }
 
     private fun snapshot(current: Connection, response: JSONObject) {
-        val video = response.optJSONObject("browser_video")
-        val receivedVideo = video?.toString()
-        if (receivedVideo != videoSignature) {
-            videoSignature = receivedVideo
-            browserVideo(video)
-        }
         val deck = response.getJSONObject("deck")
         val alert = response.optString("alert").takeUnless { it.isBlank() || it == "null" }
         if (alert != null && lastAlert != null && alert != lastAlert) report(alert)
@@ -283,6 +282,44 @@ internal class DeckLink(
         }
     }
 
+    private fun startVideo(route: Connection) {
+        val token = identity?.token ?: return
+        val http = client ?: return
+        videoSocket?.cancel()
+        videoSocket = http.newWebSocket(Request.Builder().url("wss://${route.address}:$PORT/video").build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send(message("hello").put("version", 1).put("token", token).toString())
+                }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (videoSocket === webSocket && text.length <= 2048) {
+                        runCatching { JSONObject(text) }.getOrNull()?.let(browserVideo)
+                    }
+                }
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    if (videoSocket === webSocket && bytes.size <= 256 * 1024) browserFrame(bytes)
+                }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, null)
+                }
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = retry(webSocket)
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = retry(webSocket)
+
+                private fun retry(ended: WebSocket) {
+                    runCatching {
+                        worker.execute {
+                            if (videoSocket !== ended) return@execute
+                            videoSocket = null
+                            browserVideo(message("lost"))
+                            worker.schedule({
+                                if (!paused && connection === route && videoSocket == null) startVideo(route)
+                            }, 450, TimeUnit.MILLISECONDS)
+                        }
+                    }
+                }
+            })
+    }
+
     private fun lost() {
         if (connection != null && !paused) {
             lastLoss = "Son kesinti · " + java.text.DateFormat.getTimeInstance().format(java.util.Date())
@@ -290,9 +327,10 @@ internal class DeckLink(
         }
         connection?.close()
         connection = null
-        if (videoSignature != null) {
-            videoSignature = null
-            browserVideo(null)
+        if (videoSocket != null) {
+            videoSocket?.cancel()
+            videoSocket = null
+            browserVideo(message("lost"))
         }
         update(if (identity == null) "Eşleştirme gerekli" else "Bağlantı bekleniyor", null)
     }
