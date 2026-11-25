@@ -72,7 +72,6 @@ function stop() {
     playback = null;
     if (!old) return;
     clearTimeout(old.noFrames);
-    old.motion?.close();
     old.reader?.cancel().catch(() => {});
     if (old.encoder?.state !== 'closed') old.encoder?.close();
     old.track?.stop();
@@ -176,13 +175,7 @@ async function start(message, level = 0, preferAvc = true) {
         let windowStart;
         let received = 0;
         let slowWindows = 0;
-        let previousQuality = selected.video.getVideoPlaybackQuality();
-        let sourcePeriod = 0;
-        let lowWindows = 0;
-        let predictionCredit = 0;
-        let motionTried = false;
-        let generated = 0;
-        let lastSubmitted = -Infinity;
+        let previousTotal = message.diagnostic ? selected.video.getVideoPlaybackQuality().totalVideoFrames : 0;
         while (playback === run) {
             const {value:frame,done} = await reader.read();
             if (done) break;
@@ -191,31 +184,19 @@ async function start(message, level = 0, preferAvc = true) {
                 windowStart ??= frame.timestamp;
                 const elapsed = frame.timestamp - windowStart;
                 if (elapsed >= 1_100_000) {
-                    const quality = selected.video.getVideoPlaybackQuality();
                     const inputRate = received * 1_000_000 / elapsed;
-                    const sourceRate = Math.max(0,quality.totalVideoFrames - previousQuality.totalVideoFrames) * 1_000_000 / elapsed;
                     if (message.diagnostic) {
+                        const total = selected.video.getVideoPlaybackQuality().totalVideoFrames;
                         const rate = value => Math.min(65535,Math.round(value * 1_000_000 / elapsed));
-                        port.postMessage({type:'cadence',id:run.id,source:Math.min(65535,Math.round(sourceRate)),
-                            captured:rate(received),sent:rate(published),generated:rate(generated)});
-                    }
-                    previousQuality = quality;
-                    const lowCadence = inputRate >= 19 && inputRate <= 32 &&
-                        sourceRate >= 19 && sourceRate <= 34 && Math.abs(sourceRate - inputRate) < 5;
-                    lowWindows = lowCadence ? lowWindows + 1 : 0;
-                    sourcePeriod = lowCadence ? elapsed/received : 0;
-                    if (lowWindows >= 2 && !motionTried) {
-                        motionTried = true;
-                        try {
-                            if (typeof createMotionPredictor === 'function') run.motion = createMotionPredictor(width,height);
-                        } catch {}
+                        port.postMessage({type:'cadence',id:run.id,source:rate(Math.max(0,total - previousTotal)),
+                            captured:rate(received),sent:rate(published),generated:0});
+                        previousTotal = total;
                     }
                     if (framerate === 60 && inputRate > 75) {
                         void start(message,2,preferAvc);
                         return;
                     }
-                    const expected = run.motion && sourcePeriod ? elapsed * 60 / 1_000_000 : received;
-                    slowWindows = received >= 22 && published < expected * .87 ? slowWindows + 1 : 0;
+                    slowWindows = received >= 22 && published < received * .87 ? slowWindows + 1 : 0;
                     if (slowWindows >= 2) {
                         for (let next = level + 1; next < TRANSFER_HEIGHTS.length; next++) {
                             const smaller = transferSize(selected.video,next);
@@ -227,37 +208,13 @@ async function start(message, level = 0, preferAvc = true) {
                     windowStart = frame.timestamp;
                     received = 0;
                     published = 0;
-                    generated = 0;
                 }
                 received++;
                 if (encoder.encodeQueueSize > 2) continue;
                 const keyFrame = run.forceKey || frame.timestamp - keyAt >= 500_000;
                 if (keyFrame) keyAt = frame.timestamp;
                 run.forceKey = false;
-                const timestamp = Math.max(frame.timestamp,lastSubmitted+1);
-                const original = timestamp === frame.timestamp ? frame : new VideoFrame(frame,{timestamp});
-                try { encoder.encode(original,{keyFrame}); }
-                finally { if (original !== frame) original.close(); }
-                lastSubmitted = timestamp;
-                if (!run.motion || !sourcePeriod) continue;
-                try {
-                    if (!run.motion.push(frame)) continue;
-                    predictionCredit += 60 * sourcePeriod / 1_000_000 - 1;
-                    const predicted = Math.min(2,Math.floor(predictionCredit));
-                    predictionCredit -= predicted;
-                    for (let i = 1; i <= predicted; i++) {
-                        if (encoder.encodeQueueSize > 2) break;
-                        const fraction = i/(predicted+1);
-                        const offset = Math.round(sourcePeriod*fraction);
-                        const next = run.motion.predict(timestamp+offset,fraction);
-                        try { encoder.encode(next); } finally { next.close(); }
-                        lastSubmitted = timestamp+offset;
-                        generated++;
-                    }
-                } catch {
-                    run.motion?.close();
-                    run.motion = null;
-                }
+                encoder.encode(frame,{keyFrame});
             } finally { frame.close(); }
         }
         if (playback === run) throw Error('Video ended');

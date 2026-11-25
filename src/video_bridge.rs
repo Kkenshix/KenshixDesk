@@ -498,7 +498,6 @@ pub(crate) fn install(directory: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&extension)?;
     for (name, data) in [
         ("manifest.json", include_str!("../browser/manifest.json")),
-        ("motion.js", include_str!("../browser/motion.js")),
         ("worker.js", include_str!("../browser/worker.js")),
         ("video.js", include_str!("../browser/video.js")),
     ] {
