@@ -526,6 +526,7 @@ class MainActivity : Activity() {
         headerDivider = View(this).apply { setBackgroundColor(line) }
         root.addView(headerDivider, LinearLayout.LayoutParams(-1, dp(1)))
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
+        window.setDecorFitsSystemWindows(false)
         window.attributes = window.attributes.apply {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
