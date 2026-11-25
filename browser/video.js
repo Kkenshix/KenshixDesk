@@ -9,6 +9,7 @@ let lastShadowScan = -Infinity;
 let shadowRoots = [];
 const videoKeys = new WeakMap();
 const FRAME_LIMIT = 512 * 1024;
+const TRANSFER_HEIGHTS = [1080, 900, 720, 540, 360];
 const hostname = location.hostname;
 const site = /(^|\.)youtube(?:-nocookie)?\.com$/.test(hostname) ? 'youtube'
     : /(^|\.)kick\.com$/.test(hostname) ? 'kick' : 'opera';
@@ -50,9 +51,9 @@ function sample() {
         stop();
     }
     if (playback && source?.video.videoWidth && source.video.videoHeight) {
-        const {width,height} = transferSize(source.video);
-        if (width !== playback.width || height !== playback.height) {
-            void start({id:playback.id,key:source.key});
+        const {id,key,level,inputWidth,inputHeight} = playback;
+        if (source.video.videoWidth !== inputWidth || source.video.videoHeight !== inputHeight) {
+            void start({id,key},level);
         }
     }
     const playing = source ? !source.video.paused : false;
@@ -84,28 +85,31 @@ function encodeBase64(packet) {
     return btoa(bytes);
 }
 
-function transferSize(video) {
+function transferSize(video, level) {
     const portrait = video.videoHeight > video.videoWidth;
-    const ratio = Math.min(1, (portrait ? 1080 : 1920) / video.videoWidth,
-        (portrait ? 1920 : 1080) / video.videoHeight);
+    const short = TRANSFER_HEIGHTS[level];
+    const long = short * 16 / 9;
+    const ratio = Math.min(1, (portrait ? short : long) / video.videoWidth,
+        (portrait ? long : short) / video.videoHeight);
     return {
         width:2 * Math.max(1, Math.floor(video.videoWidth * ratio / 2)),
         height:2 * Math.max(1, Math.floor(video.videoHeight * ratio / 2))
     };
 }
 
-async function start(message, preferAvc = true) {
+async function start(message, level = 0, preferAvc = true) {
     stop();
     const selected = source;
     if (selected?.key !== message.key) return;
-    const {width,height} = transferSize(selected.video);
-    const run = {id:message.id,key:message.key,width,height,needsKey:true};
+    const {width,height} = transferSize(selected.video,level);
+    const run = {id:message.id,key:message.key,level,inputWidth:selected.video.videoWidth,
+        inputHeight:selected.video.videoHeight,needsKey:true,forceKey:false};
     playback = run;
     let codec = 'vp8';
     function failed() {
         if (playback !== run) return;
         if (codec === 'h264') {
-            void start(message,false);
+            void start(message,level,false);
         } else {
             port.postMessage({type:'unavailable',id:run.id});
             stop();
@@ -115,7 +119,7 @@ async function start(message, preferAvc = true) {
         const bitrate = Math.max(3_600_000, Math.round(11_000_000 * width * height / (1920 * 1080)));
         let config = {codec:'vp8',width,height,bitrate,framerate:60,latencyMode:'realtime',
             hardwareAcceleration:'prefer-software'};
-        if (preferAvc && width * height > 1280 * 720) {
+        if (preferAvc && width * height >= 640 * 360) {
             const avc = {...config,codec:'avc1.42E02A',avc:{format:'annexb'}};
             const support = await VideoEncoder.isConfigSupported(avc).catch(() => null);
             if (playback !== run) return;
@@ -130,6 +134,8 @@ async function start(message, preferAvc = true) {
         const track = stream.getVideoTracks()[0];
         if (!track) throw Error('Video capture not available');
         run.track = track;
+        let begun = false;
+        let published = 0;
         const encoder = new VideoEncoder({
             output(chunk) {
                 if (playback !== run) return;
@@ -141,6 +147,11 @@ async function start(message, preferAvc = true) {
                 if (run.needsKey && !keyframe) return;
                 run.needsKey = false;
                 clearTimeout(run.noFrames);
+                published++;
+                if (!begun) {
+                    begun = true;
+                    port.postMessage({type:'begin',id:run.id,width,height,codec});
+                }
                 const packet = new Uint8Array(9 + chunk.byteLength);
                 packet[0] = keyframe ? 1 : 0;
                 new DataView(packet.buffer).setBigUint64(1,BigInt(Math.max(0,chunk.timestamp)));
@@ -154,20 +165,40 @@ async function start(message, preferAvc = true) {
         encoder.configure(config);
         const reader = new MediaStreamTrackProcessor({track,maxBufferSize:3}).readable.getReader();
         run.reader = reader;
-        port.postMessage({type:'begin',id:run.id,width,height,codec});
         run.noFrames = setTimeout(() => {
             if (playback === run && !selected.video.paused) {
                 failed();
             }
         },2400);
         let keyAt = -Infinity;
+        let windowStart;
+        let received = 0;
+        let slowWindows = 0;
         while (playback === run) {
             const {value:frame,done} = await reader.read();
             if (done) break;
             try {
-                if (playback !== run || encoder.encodeQueueSize > 2) continue;
-                const keyFrame = frame.timestamp - keyAt >= 500_000;
+                if (playback !== run) continue;
+                windowStart ??= frame.timestamp;
+                if (frame.timestamp - windowStart >= 1_100_000) {
+                    slowWindows = received >= 22 && published < received * .87 ? slowWindows + 1 : 0;
+                    if (slowWindows >= 2) {
+                        for (let next = level + 1; next < TRANSFER_HEIGHTS.length; next++) {
+                            const smaller = transferSize(selected.video,next);
+                            if (smaller.width === width && smaller.height === height) continue;
+                            void start(message,next,preferAvc);
+                            return;
+                        }
+                    }
+                    windowStart = frame.timestamp;
+                    received = 0;
+                    published = 0;
+                }
+                received++;
+                if (encoder.encodeQueueSize > 2) continue;
+                const keyFrame = run.forceKey || frame.timestamp - keyAt >= 500_000;
                 if (keyFrame) keyAt = frame.timestamp;
+                run.forceKey = false;
                 encoder.encode(frame,{keyFrame});
             } finally { frame.close(); }
         }
@@ -185,6 +216,7 @@ function connect() {
         next.onMessage.addListener(message => {
             if (message.type === 'start') void start(message);
             if (message.type === 'stop' && playback?.id === message.id) stop();
+            if (message.type === 'keyframe' && playback?.id === message.id) playback.forceKey = true;
             if (message.type === 'volume' && playback?.id === message.id && source?.key === message.key &&
                 Number.isInteger(message.percent) && message.percent >= 0 && message.percent <= 100) {
                 source.video.volume = message.percent / 100;

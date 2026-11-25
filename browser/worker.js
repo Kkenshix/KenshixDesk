@@ -130,7 +130,13 @@ function sendFrame(message) {
         current.needsKey = true;
         return;
     }
-    if (current.needsKey && !message.keyframe) return;
+    if (current.needsKey && !message.keyframe) {
+        if (Date.now() - (current.keyRequested ?? 0) >= 180) {
+            current.keyRequested = Date.now();
+            try { current.port.postMessage({type:'keyframe',id:current.id}); } catch {}
+        }
+        return;
+    }
     try {
         const bytes = Uint8Array.fromBase64 ? Uint8Array.fromBase64(message.data)
             : Uint8Array.from(atob(message.data), value => value.charCodeAt(0));
