@@ -2,6 +2,7 @@ package com.kenshix.deck
 
 import android.app.Activity
 import android.content.res.ColorStateList
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -155,6 +156,11 @@ internal class MixerView(
 
         fun busy() = dragging || sending || pending != null
 
+        fun ownsTouch(x: Int, y: Int): Boolean {
+            val bounds = Rect()
+            return slider.isShown && slider.getGlobalVisibleRect(bounds) && bounds.contains(x, y)
+        }
+
         private fun flush() {
             val percent = pending ?: return
             if (sending || !active) return
@@ -207,6 +213,9 @@ internal class MixerView(
         rows.orientation = VERTICAL
         addView(ScrollView(activity).apply { addView(rows) }, LayoutParams(-1, 0, 1f))
     }
+
+    fun ownsSliderTouch(x: Float, y: Float) =
+        levels.values.any { it.ownsTouch(x.toInt(), y.toInt()) }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()

@@ -202,6 +202,10 @@ internal fun AlertDialog.Builder.showDeck(): AlertDialog {
     dialog.window?.setWindowAnimations(R.style.DeckDialogMotion)
     dialog.show()
     val context = dialog.context
+    val owner = generateSequence(context) { current ->
+        (current as? android.content.ContextWrapper)?.baseContext?.takeUnless { it === current }
+    }.filterIsInstance<MainActivity>().firstOrNull()
+    dialog.window?.decorView?.let { owner?.watchDialog(it) }
     dialog.window?.apply {
         setBackgroundDrawable(DeckUi.shape(context, DeckUi.BLACK, 18))
         setDimAmount(.72f)

@@ -18,6 +18,7 @@ internal class MediaControls(
     context: Context,
     private val link: DeckLink,
     private val videoOnly: Boolean = false,
+    private val spotifyOnly: Boolean = false,
 ) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
     private var items = emptyList<JSONObject>()
@@ -26,13 +27,15 @@ internal class MediaControls(
     private var pausedSource: String? = null
     private var resumeUntil = 0L
     private var volumeTarget: String? = null
+    private var spotifyVolume: JSONObject? = null
+    private var seeking = false
     private var dragging = false
     private var volumeInFlight = false
     private var pendingVolume: Pair<String, Int>? = null
     private var commandInFlight = false
     private var reading = false
 
-    private val title = DeckUi.label(context, "", if (videoOnly) 26 else 16, DeckUi.text, 650).apply {
+    private val title = DeckUi.label(context, "", if (videoOnly || spotifyOnly) 26 else 16, DeckUi.text, 650).apply {
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
     }
@@ -80,6 +83,44 @@ internal class MediaControls(
             }
         })
     }
+    private val mute = DeckUi.action(context, "Sessize al") {
+        val level = spotifyVolume ?: return@action
+        send(message("set_mute").put("target", level.optString("id")).put("muted", !level.optBoolean("muted"))) { ok ->
+            if (!ok) error("Spotify sesi değiştirilemedi")
+            refreshSoon()
+        }
+    }
+    private val shuffle = DeckUi.action(context, "Karıştır") {
+        val active = item()?.optJSONObject("spotify")?.optBoolean("shuffle") == true
+        setting(JSONObject().put("kind", "shuffle").put("enabled", !active))
+    }
+    private val repeat = DeckUi.action(context, "Tekrar") {
+        val mode = item()?.optJSONObject("spotify")?.optInt("repeat") ?: return@action
+        setting(JSONObject().put("kind", "repeat").put("mode", (mode + 1) % 3))
+    }
+    private val seek = SeekBar(context).apply {
+        contentDescription = "Spotify parça konumu"
+        progressTintList = ColorStateList.valueOf(DeckUi.text)
+        thumbTintList = ColorStateList.valueOf(DeckUi.text)
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onStartTrackingTouch(bar: SeekBar) {
+                seeking = true
+                bar.parent.requestDisallowInterceptTouchEvent(true)
+            }
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                seeking = false
+                bar.parent.requestDisallowInterceptTouchEvent(false)
+                seekTo(bar.progress)
+            }
+            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                if (fromUser && !seeking) seekTo(value)
+            }
+        })
+    }
+
+    private fun seekTo(seconds: Int) =
+        setting(JSONObject().put("kind", "seek").put("position_ms", seconds.toLong() * 1_000))
+
     private val poll = Runnable { refresh() }
 
     init {
@@ -103,7 +144,15 @@ internal class MediaControls(
             gravity = Gravity.CENTER_VERTICAL
             addView(audioLabel, LayoutParams(-2, -2))
             addView(volume, LayoutParams(0, dp(48), 1f).apply { marginStart = dp(7) })
+            if (spotifyOnly) addView(mute, LayoutParams(-2, dp(48)).apply { marginStart = dp(7) })
         })
+        if (spotifyOnly) {
+            addView(seek, LayoutParams(-1, dp(45)))
+            addView(LinearLayout(context).apply {
+                addView(shuffle, LayoutParams(-2, dp(48)))
+                addView(repeat, LayoutParams(-2, dp(48)).apply { marginStart = dp(7) })
+            })
+        }
         addView(feedback)
         render()
     }
@@ -134,8 +183,11 @@ internal class MediaControls(
                 reading = false
                 if (!isAttachedToWindow) return@post
                 val sessions = result?.optJSONArray("sessions")
+                spotifyVolume = result?.optJSONObject("spotify_volume")
                 items = if (sessions == null) emptyList() else (0 until sessions.length()).mapNotNull {
-                    sessions.optJSONObject(it)?.takeIf { entry -> !videoOnly || entry.optBoolean("video") }
+                    sessions.optJSONObject(it)?.takeIf { entry ->
+                        (!videoOnly || entry.optBoolean("video")) && (!spotifyOnly || entry.optString("source") == "Spotify")
+                    }
                 }
                 render()
                 handler.postDelayed(poll, if (sessions == null) 1100 else 500)
@@ -146,9 +198,18 @@ internal class MediaControls(
     private fun render() {
         val item = item()
         lastSource = item?.sourceKey()
-        title.text = item?.optString("title") ?: if (videoOnly) "Video oynatılmıyor" else "Medya oynatılmıyor"
+        title.text = item?.optString("title") ?: when {
+            spotifyOnly -> "Spotify’da parça bilgisi yok"
+            videoOnly -> "Video oynatılmıyor"
+            else -> "Medya oynatılmıyor"
+        }
         source.text = item?.let { listOf(it.optString("source"), it.optString("artist")).filter(String::isNotBlank).joinToString(" · ") }
-            ?: if (videoOnly) "Windows’ta bir video aç" else "Spotify veya tarayıcıdan bir parça aç"
+            ?: when {
+                spotifyOnly && spotifyVolume == null -> "Ses denetimi için PC’de Spotify’dan bir parça aç"
+                spotifyOnly -> "Spotify ses oturumu hazır"
+                videoOnly -> "Windows’ta bir video aç"
+                else -> "Spotify veya tarayıcıdan bir parça aç"
+            }
         if (videoOnly) pick.visibility = if (items.size > 1) VISIBLE else GONE
         val playing = item?.optBoolean("playing") == true
         playback.text = if (playing) "Ⅱ" else "▶"
@@ -157,11 +218,32 @@ internal class MediaControls(
         previous.isEnabled = !commandInFlight && item?.optBoolean("previous") == true
         next.isEnabled = !commandInFlight && item?.optBoolean("next") == true
         if (!dragging && !volumeInFlight && pendingVolume == null) {
-            val level = item?.optJSONObject("volume")
+            val level = if (spotifyOnly) spotifyVolume else item?.optJSONObject("volume")
             volumeTarget = level?.optString("id")?.takeIf { it.isNotEmpty() }
             volume.isEnabled = volumeTarget != null
             volume.progress = level?.optInt("percent") ?: 0
-            audioLabel.text = if (volumeTarget == null) "Ses" else "${volumeName()} · ${volume.progress}%"
+            audioLabel.text = if (volumeTarget == null) {
+                if (spotifyOnly || item?.optString("source") == "Spotify") "Spotify sesi hazır değil" else "Ses"
+            } else "${volumeName()} · ${volume.progress}%"
+        }
+        if (spotifyOnly) {
+            val options = item?.optJSONObject("spotify")
+            mute.isEnabled = spotifyVolume != null
+            mute.text = if (spotifyVolume?.optBoolean("muted") == true) "Sesi aç" else "Sessize al"
+            shuffle.isEnabled = !commandInFlight && options?.isNull("shuffle") == false
+            shuffle.text = if (options?.optBoolean("shuffle") == true) "Karıştır · Açık" else "Karıştır"
+            repeat.isEnabled = !commandInFlight && options?.isNull("repeat") == false
+            repeat.text = when (options?.optInt("repeat")) {
+                1 -> "Tekrar · Bir parça"
+                2 -> "Tekrar · Tümü"
+                else -> "Tekrar"
+            }
+            if (!seeking) {
+                val duration = (options?.optLong("end_ms", 0) ?: 0) / 1000
+                seek.isEnabled = !commandInFlight && duration in 1..86_400
+                seek.max = duration.coerceIn(1, 86_400).toInt()
+                seek.progress = ((options?.optLong("position_ms", 0) ?: 0) / 1000).coerceIn(0, seek.max.toLong()).toInt()
+            }
         }
     }
 
@@ -190,9 +272,25 @@ internal class MediaControls(
             if (!ok || name == "play") resumeUntil = 0
             if (!ok) error("Oynatıcı komutu uygulamadı")
             render()
-            handler.removeCallbacks(poll)
-            refresh()
+            refreshSoon()
         }
+    }
+
+    private fun setting(setting: JSONObject) {
+        val session = item()?.optString("id") ?: return
+        if (commandInFlight) return
+        commandInFlight = true
+        render()
+        send(message("set_spotify").put("session", session).put("setting", setting)) { ok ->
+            commandInFlight = false
+            if (!ok) error("Spotify ayarı uygulanmadı")
+            refreshSoon()
+        }
+    }
+
+    private fun refreshSoon() {
+        handler.removeCallbacks(poll)
+        refresh()
     }
 
     private fun flushVolume() {
@@ -226,7 +324,11 @@ internal class MediaControls(
         handler.postDelayed({ if (feedback.text == message) feedback.visibility = GONE }, 2500)
     }
 
-    private fun volumeName() = if (volumeTarget == "master") "Windows sesi" else "Uygulama sesi"
+    private fun volumeName() = when {
+        spotifyOnly || item()?.optString("source") == "Spotify" -> "Spotify sesi"
+        volumeTarget == "master" -> "Windows sesi"
+        else -> "Uygulama sesi"
+    }
     private fun mediaButton(symbol: String, label: String, action: () -> Unit) =
         DeckUi.action(context, symbol) { action() }.apply {
             contentDescription = label
@@ -242,5 +344,16 @@ internal class VideoPage(context: Context, link: DeckLink, close: () -> Unit) : 
         setPadding(DeckUi.dp(context, 18), DeckUi.dp(context, 9), DeckUi.dp(context, 18), 0)
         addView(DeckUi.screenHeading(context, "Video", close))
         addView(MediaControls(context, link, videoOnly = true), LayoutParams(-1, -2))
+    }
+}
+
+internal class SpotifyPage(context: Context, link: DeckLink, close: () -> Unit) : LinearLayout(context) {
+    init {
+        orientation = VERTICAL
+        setPadding(DeckUi.dp(context, 18), DeckUi.dp(context, 9), DeckUi.dp(context, 18), DeckUi.dp(context, 10))
+        addView(DeckUi.screenHeading(context, "Spotify", close))
+        addView(android.widget.ScrollView(context).apply {
+            addView(MediaControls(context, link, spotifyOnly = true))
+        }, LayoutParams(-1, 0, 1f))
     }
 }

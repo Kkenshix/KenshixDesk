@@ -1238,6 +1238,7 @@ fn parse_color(input: &str) -> Option<Color32> {
 
 const ACTIONS: &[(Action, &str)] = &[
     (Action::Mixer, "Ses Mikseri"),
+    (Action::Spotify, "Spotify"),
     (Action::Macro, "Tuş, tıklama veya makro"),
     (Action::PlayPause, "Oynat / duraklat"),
     (Action::NextTrack, "Sonraki parça"),
@@ -1298,7 +1299,12 @@ fn action_picker(
         .selected_text(action_label(*action))
         .show_ui(ui, |ui| {
             for (item, label) in ACTIONS {
-                if !nested || !matches!(item, Action::Mixer | Action::ObsStatus | Action::Macro) {
+                if !nested
+                    || !matches!(
+                        item,
+                        Action::Mixer | Action::ObsStatus | Action::Macro | Action::Spotify
+                    )
+                {
                     ui.selectable_value(action, *item, *label);
                 }
             }

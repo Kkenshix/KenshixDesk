@@ -77,9 +77,10 @@ impl Routine {
                             })
                     }
                     Step::Wait { ms } | Step::WaitObs { ms } => (1..=15_000).contains(ms),
-                    Step::Action { action } => {
-                        !matches!(action, Action::Macro | Action::Mixer | Action::ObsStatus)
-                    }
+                    Step::Action { action } => !matches!(
+                        action,
+                        Action::Macro | Action::Mixer | Action::ObsStatus | Action::Spotify
+                    ),
                     Step::IfObs { skip } => {
                         *skip > 0 && index + usize::from(*skip) < self.steps.len()
                     }

@@ -43,7 +43,7 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
 
     private val actions = linkedMapOf(
-        "macro" to "Tuş, tıklama veya makro", "mixer" to "Ses Mikseri", "play_pause" to "Oynat / duraklat",
+        "macro" to "Tuş, tıklama veya makro", "mixer" to "Ses Mikseri", "spotify" to "Spotify", "play_pause" to "Oynat / duraklat",
         "next_track" to "Sonraki parça", "previous_track" to "Önceki parça",
         "task_view" to "Görev görünümü", "task_manager" to "Görev Yöneticisi",
         "obs_status" to "OBS durumu", "obs_start_record" to "OBS kaydı başlat",
@@ -74,6 +74,10 @@ class MainActivity : Activity() {
     private var currentPanel: String? = null
     private var editing = false
     private var mixer = false
+    private var showingSpotify = false
+    private var mixerSwipe = false
+    private var touchInProgress = false
+    private var openDialogs = 0
     private var obs = false
     private var performance = false
     private var showingVideo = false
@@ -99,7 +103,7 @@ class MainActivity : Activity() {
     private val animatedTiles = mutableListOf<MediaTile>()
     private val preferences by lazy { getSharedPreferences("deck", MODE_PRIVATE) }
     private val dim = Runnable {
-        if (!inactive) {
+        if (!inactive && !touchInProgress && openDialogs == 0) {
             dimmed = true
             brightness(effectiveIdleBrightness())
             updateAnimations()
@@ -134,7 +138,6 @@ class MainActivity : Activity() {
                 if (snapshot != null) applyDeck(snapshot)
                 if (changed && !connected()) {
                     performance = false
-                    mixer = false
                     obs = false
                     editing = false
                 }
@@ -211,6 +214,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         inactive = true
+        touchInProgress = false
         link.pause(true)
         handler.removeCallbacks(dim)
         handler.removeCallbacks(showStandby)
@@ -233,8 +237,9 @@ class MainActivity : Activity() {
     @Deprecated("Android Activity back routing")
     override fun onBackPressed() {
         if (kiosk.locked()) return
-        if (mixer || obs || performance || editing) {
+        if (mixer || obs || performance || editing || showingSpotify) {
             mixer = false
+            showingSpotify = false
             obs = false
             performance = false
             editing = false
@@ -246,12 +251,18 @@ class MainActivity : Activity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            touchInProgress = true
             downX = event.x
             downY = event.y
             val clock = body.getChildAt(0) as? StandbyView
+            mixerSwipe = (body.getChildAt(0) as? MixerView)?.ownsSliderTouch(event.rawX, event.rawY) == false
             mediaGesture = standby && clock?.ownsMediaTouch(event.rawX, event.rawY) == true
             eatingGesture = !mediaGesture && (dimmed || standby)
             if (!mediaGesture) wake()
+        }
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            touchInProgress = false
+            if (!mediaGesture) restartIdleTimer()
         }
         if (mediaGesture) {
             val delivered = super.dispatchTouchEvent(event)
@@ -264,8 +275,8 @@ class MainActivity : Activity() {
             }
             return true
         }
-        if (event.actionMasked == MotionEvent.ACTION_UP && connected() && !mixer && !obs &&
-            !performance && !showingVideo && !showingWindows && !showingInput && !editing && downY >= header.bottom) {
+        if (event.actionMasked == MotionEvent.ACTION_UP && (!mixer || mixerSwipe) && !obs &&
+            !performance && !showingSpotify && !showingVideo && !showingWindows && !showingInput && !editing && downY >= header.bottom) {
             val horizontal = event.x - downX
             if (kotlin.math.abs(horizontal) > dp(88) && kotlin.math.abs(event.y - downY) < dp(52)) {
                 val panels = layout().items()
@@ -276,13 +287,20 @@ class MainActivity : Activity() {
                 val pageIndex = if (item?.kind == "page") pages.indexOf(item.id) + direction else -1
                 val activeProfile = layout().profileFor(currentPanel)?.id
                 val profileIndex = profiles.indexOf(activeProfile) + direction
+                if (mixer || (currentPanel == null && direction > 0) ||
+                    (activeProfile != null && profileIndex == 0 && pageIndex !in pages.indices)) {
+                    val profile = if (mixer && direction > 0) profiles.getOrNull(1) else null
+                    if (!mixer || direction < 0 || profile != null) {
+                        cancelTouch(event)
+                        transitionSide = direction
+                        if (mixer) openProfile(profile, badge = true) else openMixer()
+                        return true
+                    }
+                }
                 val movingPage = pageIndex in pages.indices
                 val target = if (movingPage) pages[pageIndex] else profiles.getOrNull(profileIndex)
                 if (movingPage || profileIndex in profiles.indices) {
-                    val cancel = MotionEvent.obtain(event)
-                    cancel.action = MotionEvent.ACTION_CANCEL
-                    super.dispatchTouchEvent(cancel)
-                    cancel.recycle()
+                    cancelTouch(event)
                     transitionSide = direction
                     if (movingPage) selectPanel(target, badge = true) else openProfile(target, badge = true)
                     return true
@@ -292,8 +310,21 @@ class MainActivity : Activity() {
         return super.dispatchTouchEvent(event)
     }
 
+    private fun cancelTouch(event: MotionEvent) {
+        val cancel = MotionEvent.obtain(event)
+        cancel.action = MotionEvent.ACTION_CANCEL
+        super.dispatchTouchEvent(cancel)
+        cancel.recycle()
+    }
+
+    private fun openMixer() {
+        mixer = true
+        renderBody()
+        showPageName("Ses Mikseri")
+    }
+
     private fun enterStandby() {
-        if (inactive || !::link.isInitialized) return
+        if (inactive || touchInProgress || openDialogs > 0 || !::link.isInitialized) return
         handler.removeCallbacks(dim)
         handler.removeCallbacks(showStandby)
         dimmed = true
@@ -310,10 +341,28 @@ class MainActivity : Activity() {
         dimmed = false
         updateAnimations()
         brightness(activeBrightness)
+        restartIdleTimer()
+    }
+
+    private fun restartIdleTimer() {
         handler.removeCallbacks(dim)
-        handler.postDelayed(dim, idleSeconds * 1000L)
         handler.removeCallbacks(showStandby)
+        if (inactive || standby || touchInProgress || openDialogs > 0) return
+        handler.postDelayed(dim, idleSeconds * 1000L)
         handler.postDelayed(showStandby, standbySeconds * 1000L)
+    }
+
+    internal fun watchDialog(decor: View) {
+        openDialogs++
+        wake()
+        decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = Unit
+            override fun onViewDetachedFromWindow(view: View) {
+                view.removeOnAttachStateChangeListener(this)
+                openDialogs--
+                restartIdleTimer()
+            }
+        })
     }
 
     private fun updateAnimations() {
@@ -393,12 +442,13 @@ class MainActivity : Activity() {
         animatedTiles.clear()
         val destination = when {
             standby -> "standby"
+            showingSpotify -> "spotify"
             showingVideo -> "video"
             showingWindows -> "windows"
             showingInput -> "input"
             performance && connected() -> "performance"
             obs && connected() -> "obs"
-            mixer && connected() -> "mixer"
+            mixer -> "mixer"
             else -> currentPanel ?: "deck"
         }
         val animate = lastDestination != destination
@@ -425,6 +475,10 @@ class MainActivity : Activity() {
             if (body.getChildAt(0) !is StandbyView) display(StandbyView(this, link))
             return
         }
+        if (showingSpotify) {
+            if (body.getChildAt(0) !is SpotifyPage) display(SpotifyPage(this, link) { showingSpotify = false; renderBody() })
+            return
+        }
         if (showingVideo) {
             if (body.getChildAt(0) !is VideoPage) display(VideoPage(this, link) { showingVideo = false; renderBody() })
             return
@@ -445,8 +499,8 @@ class MainActivity : Activity() {
             display(ObsView(this, link) { obs = false; renderBody() })
             return
         }
-        if (mixer && connected()) {
-            display(MixerView(this, link, { mixer = false; renderBody() }, ::notify))
+        if (mixer) {
+            if (body.getChildAt(0) !is MixerView) display(MixerView(this, link, { mixer = false; renderBody() }, ::notify))
             return
         }
         val scroll = ScrollView(this).apply { isFillViewport = true }
@@ -519,15 +573,26 @@ class MainActivity : Activity() {
                 }, 1)
             }
             val buttons = deck.optJSONArray("buttons") ?: JSONArray()
+            var spotifyFooter: View? = null
+            var spotifyHeight = dp(66)
             for (index in 0 until buttons.length()) {
                 val record = buttons.getJSONObject(index)
                 val id = record.getString("id")
                 if (layout.panelFor(id) != currentPanel) continue
-                val tile = panelTile(record.getString("label"), actions[record.getString("action")].orEmpty(),
-                    layout.colorFor(id)) {
+                val action = record.getString("action")
+                val onClick: (View) -> Unit = {
                     if (editing) editButton(record) else execute(it, record)
                 }
-                if (!editing) attachGestures(tile, record)
+                if (currentPanel == null && action == "spotify" && spotifyFooter == null) {
+                    spotifyHeight = layout.heightFor(id)?.let { (it * scale).roundToInt() } ?: dp(66)
+                    spotifyFooter = spotifyTile(record, layout.colorFor(id), onClick)
+                    continue
+                }
+                val tile = panelTile(record.getString("label"), actions[action].orEmpty(), layout.colorFor(id), onClick)
+                if (!editing) {
+                    attachGestures(tile, record)
+                    if (record.getString("action") == "obs_toggle_record") watchRecording(tile)
+                }
                 record.optString("art").takeIf { it.isNotEmpty() }?.let { image ->
                     val picture = buttonArt.tile(this, image) { !dimmed && !inactive }
                     tile.removeViewAt(0)
@@ -537,6 +602,13 @@ class MainActivity : Activity() {
                 place(tile, layout.spanFor(id), layout.widthFor(id), layout.heightFor(id))
             }
             place(create, 1)
+            spotifyFooter?.let { footer ->
+                content.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+                content.addView(footer, LinearLayout.LayoutParams(-1, spotifyHeight).apply {
+                    topMargin = dp(6)
+                    marginEnd = dp(8)
+                })
+            }
         } else {
             content.addView(create, LinearLayout.LayoutParams(dp(68), dp(68)))
             if (status == "Bağlantı bekleniyor") {
@@ -547,6 +619,51 @@ class MainActivity : Activity() {
         }
         scroll.addView(content)
         display(scroll)
+    }
+
+    private fun spotifyTile(record: JSONObject, tint: String?, onClick: (View) -> Unit) = row().apply {
+        val name = record.getString("label")
+        contentDescription = name
+        isFocusable = true
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(15), 0, dp(17), 0)
+        DeckUi.touch(this, DeckUi.tileShade(tint), 15, DeckUi.border)
+        setOnClickListener(onClick)
+        if (!editing) attachGestures(this, record)
+        val image = record.optString("art")
+        val icon = if (image.isEmpty()) label("♫", 26, accent, true).apply {
+            gravity = Gravity.CENTER
+        } else buttonArt.tile(this@MainActivity, image) { !dimmed && !inactive }.also(animatedTiles::add)
+        icon.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        addView(icon, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(13) })
+        addView(column().apply {
+            addView(label(name, 17, text, true))
+            addView(label("Oynatma ve Spotify sesi", 12, muted))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(label("›", 27, accent, true))
+    }
+
+    private fun watchRecording(tile: LinearLayout) {
+        val title = tile.getChildAt(1) as TextView
+        val poll = object : Runnable {
+            override fun run() {
+                link.request(message("obs_status")) { result ->
+                    handler.post {
+                        if (!tile.isAttachedToWindow) return@post
+                        title.text = when {
+                            result?.optString("type") != "obs_status" -> "OBS Kaydı"
+                            result.optBoolean("recording") -> "Kaydı Durdur"
+                            else -> "Kaydı Başlat"
+                        }
+                        handler.postDelayed(this, 1800)
+                    }
+                }
+            }
+        }
+        tile.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) { handler.post(poll) }
+            override fun onViewDetachedFromWindow(view: View) { handler.removeCallbacks(poll) }
+        })
     }
 
     private fun updateConnection() {
@@ -669,6 +786,7 @@ class MainActivity : Activity() {
         val model = layout()
         val panel = model.item(id)
         currentPanel = panel?.id
+        showingSpotify = false
         showingVideo = false
         showingWindows = false
         showingInput = false
@@ -1174,7 +1292,11 @@ class MainActivity : Activity() {
             return
         }
         if (record.getString("action") == "mixer") {
-            mixer = true
+            openMixer()
+            return
+        }
+        if (record.getString("action") == "spotify") {
+            showingSpotify = true
             renderBody()
             return
         }

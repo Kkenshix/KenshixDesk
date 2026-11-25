@@ -16,6 +16,14 @@ Saat ekranındaki oynatıcı kartı Windows'un bildirdiği parça ve uygulamayı
 
 Windows editöründe **Geri al**, **Yinele**, Ctrl ile çoklu seçim ve sürükleme kılavuzları bulunur. Makro testinin başında hedef pencereyi seçmek için üç saniye vardır. Panel düzenini kaydetmeden adım sonuçlarını okuyabilirsin. Buton ayarlarından çift dokunma, basılı tutma, paylaşılan makro ve onay eklenebilir.
 
+## Spotify, yan mikser ve hızlı tuşlar
+
+Ana panelden sağa kaydırınca **Ses Mikseri** sayfası açılır. Sola kaydırarak ana panele dönersin. Ses kaydırıcısını sürüklemek sayfa değiştirmez. Açık düzenleme menüleri boyunca ekran kararma ve saat zamanlayıcıları durur, menü kapanınca baştan saymaya başlar.
+
+Ana panele eklenen yatay **Spotify** kartı oynatma kumandasını ve Spotify'ın Windows ses oturumunu açar. Spotify kendi ses oturumu var olduğu sürece pencere küçültülmüşken de ses ve sessize alma çalışır. Karıştırma, tekrar ve parça konumu uygulamanın Windows'a sunduğu ölçüde kullanılabilir. Spotify ses oturumu kapanmışsa bu kart ve saat ekranındaki Spotify kaydırıcısı Windows genel sesine geçmez.
+
+**OBS Kaydı** tek tuşla kaydı başlatır ve durdurur. OBS Studio ile WebSocket bağlantısı etkin olduğunda tuş geçerli kayıt durumunu gösterir. Discord kısayolları kullanılıyorsa masaüstü Discord'da **Tuş Atamaları** bölümünde sağırlaştırma için Ctrl + Shift + F12, mikrofon için Ctrl + Shift + F10 eşlenir.
+
 ## Stable yayın kurulumu
 
 Geliştirme APK'sı yerel debug sertifikasıyla imzalıdır. Kurulu uygulama aynı Android imzasını gerektirir. İlk üretim geçişi için aynı Android imzalayıcı sürekliliğini sağla veya debug kurulumundan üretim kurulumuna ayrı cihaz hazırlığı planla.

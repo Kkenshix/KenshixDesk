@@ -446,7 +446,9 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
                     | Action::TaskView
                     | Action::TaskManager),
                 ) => operation(db, id, |_| windows_host::run(action))?,
-                Some(action) if !matches!(action, Action::Mixer | Action::ObsStatus) => {
+                Some(action)
+                    if !matches!(action, Action::Mixer | Action::ObsStatus | Action::Spotify) =>
+                {
                     operation(db, id, |db| crate::obs::run(db, action))?
                 }
                 _ => json!({"type":"action_result","operation":id,"status":"failed"}),
@@ -493,7 +495,12 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
             operation: id,
             input,
         } => operation(db, id, |_| crate::windows_host::remote_input(input))?,
-        Request::Media => json!({"type":"media","sessions":crate::media::snapshot()?}),
+        Request::Media => serde_json::to_value(crate::media::snapshot()?)?,
+        Request::SetSpotify {
+            operation: id,
+            session,
+            setting,
+        } => operation(db, id, |_| crate::media::set_spotify(&session, setting))?,
         Request::ControlMedia {
             operation: id,
             session,

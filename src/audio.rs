@@ -25,12 +25,15 @@ use windows::{
 
 #[derive(Clone, Serialize)]
 pub(crate) struct Level {
-    id: String,
+    pub(crate) id: String,
     label: String,
     percent: u8,
     muted: bool,
     mixed: bool,
 }
+
+pub(crate) const SPOTIFY: &str =
+    "app:de0b92d2d2872a9f08e72f1d87fecd65897fcb31a986b1e337ed9417221827f7";
 
 struct Com;
 
@@ -118,7 +121,11 @@ fn session_groups(
                         "{:x}",
                         <sha2::Sha256 as sha2::Digest>::digest(image.to_lowercase().as_bytes())
                     );
-                    (format!("app:{hash}"), name)
+                    if name.eq_ignore_ascii_case("spotify") {
+                        (SPOTIFY.to_owned(), "Spotify".to_owned())
+                    } else {
+                        (format!("app:{hash}"), name)
+                    }
                 } else {
                     let Ok(instance) = control.GetSessionInstanceIdentifier() else {
                         continue;
@@ -140,6 +147,47 @@ fn session_groups(
                 .or_insert_with(|| (label, Vec::new()))
                 .1
                 .push(volume);
+        }
+    }
+    Ok(groups)
+}
+
+fn output_groups(
+    devices: &IMMDeviceEnumerator,
+    default: &IMMDevice,
+) -> Result<BTreeMap<String, (String, Vec<ISimpleAudioVolume>)>> {
+    use windows::Win32::{Media::Audio::DEVICE_STATE_ACTIVE, System::Com::CoTaskMemFree};
+    let mut groups = session_groups(default)?;
+    // SAFETY: The devices and session interfaces belong to the caller's live apartment.
+    unsafe {
+        let id_of = |device: &IMMDevice| -> Result<String> {
+            let pointer = device.GetId()?;
+            let id = pointer.to_string();
+            CoTaskMemFree(Some(pointer.0.cast()));
+            Ok(id?)
+        };
+        let Ok(default_id) = id_of(default) else {
+            return Ok(groups);
+        };
+        let Ok(outputs) = devices.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else {
+            return Ok(groups);
+        };
+        for index in 0..outputs.GetCount().unwrap_or_default() {
+            let Ok(output) = outputs.Item(index) else {
+                continue;
+            };
+            if id_of(&output).is_ok_and(|id| id == default_id) {
+                continue;
+            }
+            if let Ok(mut other) = session_groups(&output)
+                && let Some((label, mut sessions)) = other.remove(SPOTIFY)
+            {
+                groups
+                    .entry(SPOTIFY.to_owned())
+                    .or_insert_with(|| (label, Vec::new()))
+                    .1
+                    .append(&mut sessions);
+            }
         }
     }
     Ok(groups)
@@ -181,10 +229,13 @@ pub(crate) fn media_levels() -> Result<Vec<Level>> {
 }
 
 pub(crate) fn media_level<'a>(levels: &'a [Level], source: &str) -> Option<&'a Level> {
+    if crate::media::is_spotify(source) {
+        return levels.iter().find(|level| level.id == SPOTIFY);
+    }
     let source = source.to_ascii_lowercase();
     let name = source.rsplit(['\\', '/']).next().unwrap_or(&source);
     let mut matching = levels.iter().filter(|level| {
-        level.id.starts_with("app:") && {
+        level.id != SPOTIFY && level.id.starts_with("app:") && {
             let label = level.label.to_ascii_lowercase();
             !label.is_empty()
                 && (name == label
@@ -217,7 +268,7 @@ fn levels(include_capture: bool) -> Result<Vec<Level>> {
     {
         levels.push(input);
     }
-    for (id, (label, sessions)) in session_groups(&output)? {
+    for (id, (label, sessions)) in output_groups(&devices, &output)? {
         // SAFETY: Each simple volume interface belongs to the live apartment.
         let values: Vec<_> = sessions
             .iter()
@@ -268,7 +319,11 @@ pub(crate) fn set(target: &str, volume: Option<u8>, mute: Option<bool>) -> Resul
             }
             return Ok(());
         }
-        let groups = session_groups(&device)?;
+        let groups = if target == SPOTIFY {
+            output_groups(&devices, &device)?
+        } else {
+            session_groups(&device)?
+        };
         let (_, sessions) = groups.get(target).context("ses oturumu kapanmış")?;
         for session in sessions {
             if let Some(level) = new_level {
@@ -302,7 +357,10 @@ pub(crate) fn apply_preset(levels: &[PresetLevel]) -> Result<()> {
     let (_com, devices) = devices()?;
     // SAFETY: The listed interfaces are owned by the current apartment.
     unsafe {
-        let groups = session_groups(&devices.GetDefaultAudioEndpoint(eRender, eConsole)?)?;
+        let groups = output_groups(
+            &devices,
+            &devices.GetDefaultAudioEndpoint(eRender, eConsole)?,
+        )?;
         let mut applied = false;
         for entry in levels {
             if let Some((_, sessions)) = groups.get(&entry.id) {
@@ -413,4 +471,26 @@ pub(crate) fn select_output(id: &str) -> Result<()> {
         "Windows ses çıkışını değiştirmedi"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spotify_never_falls_back_to_windows_or_browser_volume() {
+        let level = |id: &str, label: &str| Level {
+            id: id.into(),
+            label: label.into(),
+            percent: 42,
+            muted: false,
+            mixed: false,
+        };
+        let mut levels = vec![level("master", "Windows"), level("app:chrome", "chrome")];
+        assert!(media_level(&levels, "Spotify.exe").is_none());
+        assert!(media_level(&levels, "SpotifyAB.SpotifyMusic_package!Spotify").is_none());
+        levels.push(level(SPOTIFY, "Spotify"));
+        assert_eq!(media_level(&levels, "Spotify.exe").unwrap().id, SPOTIFY);
+        assert_ne!(media_level(&levels, "Chrome.spotify").unwrap().id, SPOTIFY);
+    }
 }

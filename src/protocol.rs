@@ -58,6 +58,7 @@ pub(crate) enum Action {
     ObsSaveReplay,
     ObsStatus,
     Mixer,
+    Spotify,
     Macro,
 }
 
@@ -107,6 +108,11 @@ pub(crate) enum Request {
         operation: Uuid,
         session: String,
         command: crate::media::Command,
+    },
+    SetSpotify {
+        operation: Uuid,
+        session: String,
+        setting: crate::media::SpotifySetting,
     },
     UpdateStatus,
     ObsStatus,
