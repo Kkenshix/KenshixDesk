@@ -126,7 +126,6 @@ class MainActivity : Activity() {
         currentPanel = layout().item(preferences.getString("current_panel", null))?.id
         status = if (preferences.contains("identity")) "Bağlantı bekleniyor" else "Eşleştirme gerekli"
         body = FrameLayout(this)
-        render()
         link = DeckLink(Credentials(preferences), { connection, snapshot ->
             handler.post {
                 if (isDestroyed) return@post
@@ -143,6 +142,7 @@ class MainActivity : Activity() {
                 if (changed || (snapshot != null && !mixer && !obs && !performance)) renderBody()
             }
         }, { message -> handler.post { if (!isDestroyed) notify(message) } })
+        render()
         battery = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
