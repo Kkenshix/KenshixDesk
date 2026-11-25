@@ -117,7 +117,7 @@ fn details(session: &Session) -> Result<NowPlaying> {
         .and_then(|value| value.Value().ok());
     let (source, browser) = service_name(&raw_source);
     let video = playback == Some(MediaPlaybackType::Video)
-        || (browser && playback != Some(MediaPlaybackType::Music))
+        || browser
         || title.to_ascii_lowercase().contains("youtube");
     Ok(NowPlaying {
         id,

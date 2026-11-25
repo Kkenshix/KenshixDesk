@@ -12,7 +12,7 @@ Ekran 15 saniye sonra kararır ve 45 saniye sonra saat, tarih ve PC CPU/GPU/RAM 
 
 Saat ekranındaki oynatıcı kartı Windows'un bildirdiği parça ve uygulamayı gösterir. Önceki, oynat/duraklat, sonraki ve ses kontrolleri saat görünümünü açık tutar. Bu kontrollerin dışına dokunarak panele dön. Ses kaynağı belirlenebildiğinde uygulamanın sesi, diğer durumlarda kartta açıkça belirtilen Windows genel sesi ayarlanır.
 
-Üst çubuktaki **Video** her profilden açılır. Windows'un medya bilgisi yayımladığı video oturumlarını gösterir. Pencere kumandası, klavye ve touchpad ile bağlantı tanılama **Ayarlar** içindedir. Windows öne alma izni vermezse pencere görev çubuğunda işaretlenebilir. Mikserde uygulama adını basılı tutarak sabitle, **Ses profilleri** ile çalışan uygulamaların seslerini kaydet veya uygula.
+Üst çubuktaki **Video** her profilden açılır. Windows'un medya bilgisi yayımladığı video ve tarayıcı oturumlarını gösterir. Tarayıcı müzikle videoyu aynı oturum türüyle bildirebildiği için bu listede tarayıcıdan çalan müzik de görünebilir. Pencere kumandası, klavye ve touchpad ile bağlantı tanılama **Ayarlar** içindedir. Windows öne alma izni vermezse pencere görev çubuğunda işaretlenebilir. Mikserde uygulama adını basılı tutarak sabitle, **Ses profilleri** ile çalışan uygulamaların seslerini kaydet veya uygula.
 
 Windows editöründe **Geri al**, **Yinele**, Ctrl ile çoklu seçim ve sürükleme kılavuzları bulunur. Makro testinin başında hedef pencereyi seçmek için üç saniye vardır. Panel düzenini kaydetmeden adım sonuçlarını okuyabilirsin. Buton ayarlarından çift dokunma, basılı tutma, paylaşılan makro ve onay eklenebilir.
 

@@ -5,6 +5,7 @@ import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -22,6 +23,8 @@ internal class MediaControls(
     private var items = emptyList<JSONObject>()
     private var selectedSource: String? = null
     private var lastSource: String? = null
+    private var pausedSource: String? = null
+    private var resumeUntil = 0L
     private var volumeTarget: String? = null
     private var dragging = false
     private var volumeInFlight = false
@@ -167,18 +170,24 @@ internal class MediaControls(
     private fun item(): JSONObject? {
         val first = items.firstOrNull()
         return items.firstOrNull { it.sourceKey() == selectedSource }
+            ?: items.firstOrNull { SystemClock.elapsedRealtime() < resumeUntil && it.sourceKey() == pausedSource }
             ?: first?.takeIf { it.optBoolean("playing") }
             ?: items.firstOrNull { it.sourceKey() == lastSource }
             ?: first
     }
 
     private fun command(name: String) {
-        val id = item()?.optString("id") ?: return
+        val current = item() ?: return
         if (commandInFlight) return
+        if (name == "pause") {
+            pausedSource = current.sourceKey()
+            resumeUntil = SystemClock.elapsedRealtime() + 30_000
+        }
         commandInFlight = true
         render()
-        send(message("control_media").put("session", id).put("command", name)) { ok ->
+        send(message("control_media").put("session", current.optString("id")).put("command", name)) { ok ->
             commandInFlight = false
+            if (!ok || name == "play") resumeUntil = 0
             if (!ok) error("Oynatıcı komutu uygulamadı")
             render()
             handler.removeCallbacks(poll)
