@@ -24,6 +24,18 @@ pub(crate) struct Button {
     pub routine: Option<crate::routine::Routine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub art: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior: Option<ButtonBehavior>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ButtonBehavior {
+    pub double_tap: Option<Uuid>,
+    pub long_press: Option<Uuid>,
+    pub shared_macro: Option<Uuid>,
+    pub confirm: bool,
+    pub pinned: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -81,6 +93,10 @@ pub(crate) enum Request {
     },
     Metrics,
     Media,
+    Input {
+        operation: Uuid,
+        input: crate::windows_host::InputAction,
+    },
     Windows,
     ControlWindow {
         operation: Uuid,
@@ -108,10 +124,22 @@ pub(crate) enum Request {
     OperationStatus {
         operation: Uuid,
     },
+    MacroHistory {
+        operation: Uuid,
+    },
     CancelOperation {
         operation: Uuid,
     },
     Mixer,
+    AudioOutputs,
+    SelectAudio {
+        operation: Uuid,
+        output: String,
+    },
+    ApplyAudioPreset {
+        operation: Uuid,
+        levels: Vec<crate::audio::PresetLevel>,
+    },
     SetVolume {
         operation: Uuid,
         target: String,
@@ -135,11 +163,34 @@ impl Deck {
                 && !button.id.is_nil()
                 && ids.insert(button.id)
                 && button.art.as_deref().is_none_or(crate::art::valid_id)
-                && match (&button.action, &button.routine) {
-                    (Action::Macro, Some(routine)) => routine.valid(),
-                    (Action::Macro, None) | (_, Some(_)) => false,
-                    (_, None) => true,
+                && match (
+                    button.action,
+                    &button.routine,
+                    button
+                        .behavior
+                        .as_ref()
+                        .and_then(|extra| extra.shared_macro),
+                ) {
+                    (Action::Macro, Some(routine), None) => routine.valid(),
+                    (Action::Macro, None, Some(id)) => {
+                        id != button.id
+                            && self.buttons.iter().any(|source| {
+                                source.id == id
+                                    && source.action == Action::Macro
+                                    && source.routine.is_some()
+                            })
+                    }
+                    (Action::Macro, _, _) | (_, Some(_), _) | (_, _, Some(_)) => false,
+                    _ => true,
                 }
+                && button.behavior.as_ref().is_none_or(|extra| {
+                    [extra.double_tap, extra.long_press]
+                        .into_iter()
+                        .flatten()
+                        .all(|id| {
+                            id != button.id && self.buttons.iter().any(|target| target.id == id)
+                        })
+                })
         });
         valid
             && self
@@ -172,6 +223,7 @@ mod tests {
             action: Action::PlayPause,
             routine: None,
             art: None,
+            behavior: None,
         };
         let deck = Deck {
             revision: 0,

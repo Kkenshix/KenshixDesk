@@ -29,6 +29,9 @@ internal class MixerView(
     private val levels = linkedMapOf<String, Level>()
     private var active = false
     private var reading = false
+    private val settings = activity.getSharedPreferences("mixer", android.content.Context.MODE_PRIVATE)
+    private val pinned = settings.getStringSet("pinned", emptySet()).orEmpty().toMutableSet()
+    private var current = emptyList<JSONObject>()
 
     private inner class Level(val id: String, label: String) {
         private val value = TextView(activity).apply { setTextColor(accent); textSize = 16f }
@@ -122,7 +125,14 @@ internal class MixerView(
                 addView(LinearLayout(activity).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     addView(TextView(activity).apply {
-                        text = label
+                        text = if (pinned.contains(this@Level.id)) "★  $label" else label
+                        setOnLongClickListener {
+                            if (!pinned.remove(this@Level.id)) pinned.add(this@Level.id)
+                            settings.edit().putStringSet("pinned", pinned.toSet()).apply()
+                            levels.clear()
+                            read()
+                            true
+                        }
                         textSize = 16f
                         setTextColor(ink)
                         setTypeface(null, android.graphics.Typeface.BOLD)
@@ -189,6 +199,11 @@ internal class MixerView(
         status.setPadding(dp(12), dp(9), dp(12), dp(9))
         status.setTextColor(secondary)
         addView(status)
+        addView(LinearLayout(activity).apply {
+            addView(DeckUi.action(activity, "Ses çıkışı") { pickOutput() })
+            addView(DeckUi.action(activity, "Ses profilleri") { profiles() },
+                LayoutParams(-2,dp(48)).apply { marginStart = dp(6) })
+        }, LayoutParams(-1,-2).apply { bottomMargin = dp(7) })
         rows.orientation = VERTICAL
         addView(ScrollView(activity).apply { addView(rows) }, LayoutParams(-1, 0, 1f))
     }
@@ -221,7 +236,11 @@ internal class MixerView(
                 }
                 if (levels.values.any { it.busy() }) return@post
                 status.visibility = android.view.View.GONE
-                val items = (0 until records.length()).map(records::getJSONObject)
+                current = (0 until records.length()).map(records::getJSONObject)
+                val items = current.sortedBy { level ->
+                    val id = level.getString("id")
+                    if (id == "master") 0 else if (id == "microphone") 1 else if (id in pinned) 2 else 3
+                }
                 if (levels.keys.toList() != items.map { it.getString("id") }) {
                     levels.clear()
                     rows.removeAllViews()
@@ -229,6 +248,64 @@ internal class MixerView(
                     DeckUi.appear(rows, 4)
                 }
                 items.forEach { levels[it.getString("id")]?.render(it) }
+            }
+        }
+    }
+
+    private fun pickOutput() {
+        link.request(message("audio_outputs")) { response ->
+            handler.post {
+                if (!active) return@post
+                val values = response?.optJSONArray("outputs")
+                if (values == null || values.length() == 0) { notice("Ses çıkışları bulunamadı"); return@post }
+                val outputs = (0 until values.length()).map(values::getJSONObject)
+                DeckUi.choices(DeckUi.dialog(activity).setTitle("Windows ses çıkışı"), outputs.map {
+                    it.optString("name") + if (it.optBoolean("active")) " · Kullanılıyor" else ""
+                }) { index ->
+                    if (!outputs[index].optBoolean("active")) runSetting(message("select_audio").put("output", outputs[index].getString("id")))
+                }.setNegativeButton("Kapat", null).showDeck()
+            }
+        }
+    }
+
+    private fun profiles() {
+        val saved = runCatching { JSONObject(settings.getString("profiles","{}").orEmpty()) }.getOrDefault(JSONObject())
+        val names = saved.keys().asSequence().toList().sorted()
+        DeckUi.choices(DeckUi.dialog(activity).setTitle("Ses profilleri"), listOf("Mevcut seviyeleri kaydet") + names) { index ->
+            if (index == 0) {
+                val values = current.filter { it.optString("id").startsWith("app:") }.take(40)
+                if (values.isEmpty()) { notice("Kaydetmek için bir uygulamada ses çalmalı"); return@choices }
+                val input = android.widget.EditText(activity).apply { DeckUi.field(this); hint = "Profil adı"; isSingleLine = true }
+                DeckUi.dialog(activity).setTitle("Ses profili kaydet")
+                    .setView(DeckUi.editor(activity).apply { addView(input) }).setNegativeButton("Vazgeç",null)
+                    .setPositiveButton("Kaydet") { _, _ ->
+                        val name = input.text.toString().trim().take(50)
+                        if (name.isNotEmpty() && (name in names || names.size < 24)) {
+                            val levels = org.json.JSONArray()
+                            values.forEach { levels.put(JSONObject().put("id",it.getString("id")).put("percent",it.getInt("percent"))) }
+                            saved.put(name, levels)
+                            settings.edit().putString("profiles",saved.toString()).apply()
+                        }
+                    }.showDeck()
+            } else {
+                val name = names[index - 1]
+                DeckUi.dialog(activity).setTitle(name).setNegativeButton("Kapat",null)
+                    .setNeutralButton("Sil") { _, _ -> saved.remove(name); settings.edit().putString("profiles",saved.toString()).apply() }
+                    .setPositiveButton("Uygula") { _, _ -> runSetting(message("apply_audio_preset").put("levels",saved.getJSONArray(name))) }
+                    .showDeck()
+            }
+        }.setNegativeButton("Kapat",null).showDeck()
+    }
+
+    private fun runSetting(request: JSONObject) {
+        val id = UUID.randomUUID().toString()
+        link.request(request.put("operation",id)) { reply ->
+            handler.post {
+                if (!active) return@post
+                if (reply?.optString("operation") == id && reply.optString("status") == "ok") {
+                    notice("Ses ayarı uygulandı")
+                    read()
+                } else notice("Windows ses ayarını uygulayamadı")
             }
         }
     }

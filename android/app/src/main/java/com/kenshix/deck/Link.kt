@@ -98,7 +98,21 @@ internal class DeckLink(
     private var nextAttempt = 0L
     private var failures = 0
     private var nextUsbProbe = 0L
+    @Volatile private var lastLatency: Long? = null
+    @Volatile private var lastLoss: String? = null
     private var deckRevision = -1L
+
+    fun diagnostics(): String {
+        val active = connection
+        val route = when {
+            paused -> "Duraklatıldı"
+            active == null -> "Bağlantı yok"
+            active.usb -> "USB"
+            else -> "Wi-Fi"
+        }
+        val latency = lastLatency?.let { "$it ms" } ?: "—"
+        return "$route\nSon yanıt: $latency\n${lastLoss ?: "Bağlantı kesintisi görülmedi"}"
+    }
     private var lastAlert: String? = null
 
     init {
@@ -234,7 +248,9 @@ internal class DeckLink(
                 return
             }
         }
+        val start = android.os.SystemClock.elapsedRealtime()
         val response = current.exchange(message("snapshot"), 1300)
+        lastLatency = android.os.SystemClock.elapsedRealtime() - start
         check(response.optString("type") == "snapshot")
         snapshot(current, response)
     }
@@ -260,6 +276,10 @@ internal class DeckLink(
     }
 
     private fun lost() {
+        if (connection != null && !paused) {
+            lastLoss = "Son kesinti · " + java.text.DateFormat.getTimeInstance().format(java.util.Date())
+            lastLatency = null
+        }
         connection?.close()
         connection = null
         update(if (identity == null) "Eşleştirme gerekli" else "Bağlantı bekleniyor", null)

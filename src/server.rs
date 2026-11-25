@@ -414,7 +414,7 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
         Request::Snapshot => {
             json!({"type":"snapshot","deck":store::deck(db)?,"alert":crate::automation::alert(db)})
         }
-        Request::Save { deck } if deck.validate() => match store::save(db, deck)? {
+        Request::Save { deck } => match store::save(db, deck)? {
             Some(deck) => json!({"type":"saved","deck":deck}),
             None => json!({"type":"conflict","deck":store::deck(db)?}),
         },
@@ -422,11 +422,19 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
             operation: id,
             button,
         } => {
-            let button = store::deck(db)?
-                .buttons
-                .into_iter()
-                .find(|record| record.id == button);
-            if let Some(routine) = button.as_ref().and_then(|button| button.routine.clone()) {
+            let deck = store::deck(db)?;
+            let button = deck.buttons.iter().find(|record| record.id == button);
+            let routine = button.and_then(|record| {
+                record.routine.clone().or_else(|| {
+                    let id = record.behavior.as_ref()?.shared_macro?;
+                    deck.buttons
+                        .iter()
+                        .find(|source| source.id == id)?
+                        .routine
+                        .clone()
+                })
+            });
+            if let Some(routine) = routine {
                 let status = crate::routine::start(db, id, routine)?;
                 return Ok(json!({"type":"action_result","operation":id,"status":status}));
             }
@@ -448,6 +456,11 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
         Request::OperationStatus { operation } => {
             let status = crate::routine::status(db, operation)?;
             json!({"type":"action_result","operation":operation,"status":status})
+        }
+        Request::MacroHistory { operation } => {
+            let steps = store::macro_history(db, operation)?;
+            let status = crate::routine::status(db, operation)?;
+            json!({"type":"macro_history","status":status,"steps":steps})
         }
         Request::CancelOperation { operation } => {
             crate::routine::cancel(operation);
@@ -476,12 +489,25 @@ fn handle(db: &mut Connection, request: Request) -> Result<Value> {
             window,
             command,
         } => operation(db, id, |_| crate::window_control::execute(&window, command))?,
+        Request::Input {
+            operation: id,
+            input,
+        } => operation(db, id, |_| crate::windows_host::remote_input(input))?,
         Request::Media => json!({"type":"media","sessions":crate::media::snapshot()?}),
         Request::ControlMedia {
             operation: id,
             session,
             command,
         } => operation(db, id, |_| crate::media::control(&session, command))?,
+        Request::AudioOutputs => json!({"type":"audio_outputs","outputs":crate::audio::outputs()?}),
+        Request::SelectAudio {
+            operation: id,
+            output,
+        } => operation(db, id, |_| crate::audio::select_output(&output))?,
+        Request::ApplyAudioPreset {
+            operation: id,
+            levels,
+        } => operation(db, id, |_| crate::audio::apply_preset(&levels))?,
         Request::Mixer => json!({"type":"mixer","levels":crate::audio::mixer()?}),
         Request::SetVolume {
             operation: id,

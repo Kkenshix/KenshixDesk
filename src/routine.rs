@@ -71,9 +71,10 @@ impl Routine {
                             && path.is_absolute()
                             && !executable.starts_with(r"\\")
                             && !executable.chars().any(char::is_control)
-                            && path
-                                .extension()
-                                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+                            && path.extension().is_some_and(|extension| {
+                                extension.eq_ignore_ascii_case("exe")
+                                    || extension.eq_ignore_ascii_case("lnk")
+                            })
                     }
                     Step::Wait { ms } | Step::WaitObs { ms } => (1..=15_000).contains(ms),
                     Step::Action { action } => {
@@ -85,29 +86,25 @@ impl Routine {
                 })
     }
 
-    fn run(&self, db: &Connection, canceled: &AtomicBool) -> &'static str {
+    fn run(&self, db: &Connection, id: Uuid, canceled: &AtomicBool) -> &'static str {
         let deadline = Instant::now() + Duration::from_secs(60);
         let active = || !canceled.load(Ordering::Relaxed) && Instant::now() < deadline;
         let mut failed = false;
         let mut skip_count = 0;
-        for step in &self.steps {
+        for (index, step) in self.steps.iter().enumerate() {
             if !active() {
                 break;
             }
             if skip_count > 0 {
                 skip_count -= 1;
+                let _ = store::macro_step(db, id, index + 1, "skipped", 0);
                 continue;
             }
+            let starting = Instant::now();
             let outcome = match step {
                 Step::Keys { keys, hold_ms } => windows_host::keys(keys, *hold_ms, active),
                 Step::Text { text } => windows_host::type_text(text, active),
-                Step::Launch { executable } => {
-                    let mut command = std::process::Command::new(executable);
-                    if let Some(directory) = std::path::Path::new(executable).parent() {
-                        command.current_dir(directory);
-                    }
-                    command.spawn().map(|_| ()).map_err(Into::into)
-                }
+                Step::Launch { executable } => windows_host::launch_local(executable),
                 Step::Click { x, y } => windows_host::click(*x, *y),
                 Step::Wait { ms } => wait(
                     Duration::from_millis((*ms).into()),
@@ -130,6 +127,14 @@ impl Routine {
                     Ok(())
                 }
             };
+            let step_result = if outcome.is_ok() { "ok" } else { "failed" };
+            let _ = store::macro_step(
+                db,
+                id,
+                index + 1,
+                step_result,
+                starting.elapsed().as_millis() as u64,
+            );
             if outcome.is_err() {
                 failed = true;
                 if !self.continue_on_error {
@@ -217,6 +222,7 @@ pub(crate) fn cancel(id: Uuid) {
 }
 
 pub(crate) fn start(db: &mut Connection, id: Uuid, routine: Routine) -> Result<String> {
+    ensure!(routine.valid(), "makro adımları geçersiz");
     let mut running = RUNNING.lock().expect("macro lock");
     if EXITING.load(Ordering::Relaxed) {
         return Ok("busy".into());
@@ -241,7 +247,11 @@ pub(crate) fn start(db: &mut Connection, id: Uuid, routine: Routine) -> Result<S
     if std::thread::Builder::new()
         .name("deck-macro".into())
         .spawn(move || {
-            let result = routine.run(&worker_db, &canceled);
+            let _ = worker_db.execute(
+                "DELETE FROM macro_steps WHERE created < unixepoch() - 86400",
+                [],
+            );
+            let result = routine.run(&worker_db, id, &canceled);
             let _ = store::finish(&worker_db, id, result);
             *RUNNING.lock().expect("macro lock") = None;
         })

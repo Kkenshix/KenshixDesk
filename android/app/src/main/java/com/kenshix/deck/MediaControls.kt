@@ -20,7 +20,8 @@ internal class MediaControls(
 ) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
     private var items = emptyList<JSONObject>()
-    private var selectedId: String? = null
+    private var selectedSource: String? = null
+    private var lastSource: String? = null
     private var volumeTarget: String? = null
     private var dragging = false
     private var volumeInFlight = false
@@ -46,7 +47,7 @@ internal class MediaControls(
             DeckUi.choices(DeckUi.dialog(context).setTitle("Video seç"), items.map {
                 "${it.optString("title")} · ${it.optString("source")}"
             }) { index ->
-                selectedId = items.getOrNull(index)?.optString("id")
+                selectedSource = items.getOrNull(index)?.sourceKey()
                 render()
             }.setNegativeButton("Kapat", null).showDeck()
         }
@@ -141,6 +142,7 @@ internal class MediaControls(
 
     private fun render() {
         val item = item()
+        lastSource = item?.sourceKey()
         title.text = item?.optString("title") ?: if (videoOnly) "Video oynatılmıyor" else "Medya oynatılmıyor"
         source.text = item?.let { listOf(it.optString("source"), it.optString("artist")).filter(String::isNotBlank).joinToString(" · ") }
             ?: if (videoOnly) "Windows’ta bir video aç" else "Spotify veya tarayıcıdan bir parça aç"
@@ -160,7 +162,15 @@ internal class MediaControls(
         }
     }
 
-    private fun item() = items.firstOrNull { it.optString("id") == selectedId } ?: items.firstOrNull()
+    private fun JSONObject.sourceKey() = optString("source_key").ifEmpty { optString("source") }
+
+    private fun item(): JSONObject? {
+        val first = items.firstOrNull()
+        return items.firstOrNull { it.sourceKey() == selectedSource }
+            ?: first?.takeIf { it.optBoolean("playing") }
+            ?: items.firstOrNull { it.sourceKey() == lastSource }
+            ?: first
+    }
 
     private fun command(name: String) {
         val id = item()?.optString("id") ?: return

@@ -8,6 +8,14 @@ Tek tuş veya kombinasyon için eylem olarak **Tuş, tıklama veya makro** seç.
 
 Ekran 15 saniye sonra kararır ve 45 saniye sonra saat, tarih ve PC CPU/GPU/RAM değerlerini gösterir. Üst çubuktaki saate dokunarak bu görünümü hemen aç. İlk dokunuş paneli uyandırır. Yönetilen kiosk ekrandayken yan tuşun uyku olayından sonra saat görünümü Android ekranı uyandırmayı dener. Saat görünümü açıkken yan tuş normal biçimde ekranı kapatır.
 
+## Medya ve Windows denetimi
+
+Saat ekranındaki oynatıcı kartı Windows'un bildirdiği parça ve uygulamayı gösterir. Önceki, oynat/duraklat, sonraki ve ses kontrolleri saat görünümünü açık tutar. Bu kontrollerin dışına dokunarak panele dön. Ses kaynağı belirlenebildiğinde uygulamanın sesi, diğer durumlarda kartta açıkça belirtilen Windows genel sesi ayarlanır.
+
+Üst çubuktaki **Video** her profilden açılır. Windows'un medya bilgisi yayımladığı video oturumlarını gösterir. Pencere kumandası, klavye ve touchpad ile bağlantı tanılama **Ayarlar** içindedir. Windows öne alma izni vermezse pencere görev çubuğunda işaretlenebilir. Mikserde uygulama adını basılı tutarak sabitle, **Ses profilleri** ile çalışan uygulamaların seslerini kaydet veya uygula.
+
+Windows editöründe **Geri al**, **Yinele**, Ctrl ile çoklu seçim ve sürükleme kılavuzları bulunur. Makro testinin başında hedef pencereyi seçmek için üç saniye vardır. Panel düzenini kaydetmeden adım sonuçlarını okuyabilirsin. Buton ayarlarından çift dokunma, basılı tutma, paylaşılan makro ve onay eklenebilir.
+
 ## Stable yayın kurulumu
 
 Geliştirme APK'sı yerel debug sertifikasıyla imzalıdır. Kurulu uygulama aynı Android imzasını gerektirir. İlk üretim geçişi için aynı Android imzalayıcı sürekliliğini sağla veya debug kurulumundan üretim kurulumuna ayrı cihaz hazırlığı planla.

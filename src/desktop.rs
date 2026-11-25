@@ -55,6 +55,7 @@ impl Edit {
                     action,
                     routine: None,
                     art: None,
+                    behavior: None,
                 });
             }
             Self::SetMedia { id, file } => {

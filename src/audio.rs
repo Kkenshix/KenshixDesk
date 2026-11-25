@@ -281,3 +281,136 @@ pub(crate) fn set(target: &str, volume: Option<u8>, mute: Option<bool>) -> Resul
     }
     Ok(())
 }
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PresetLevel {
+    id: String,
+    percent: u8,
+}
+
+pub(crate) fn apply_preset(levels: &[PresetLevel]) -> Result<()> {
+    ensure!(
+        !levels.is_empty()
+            && levels.len() <= 40
+            && levels.iter().all(|entry| entry.percent <= 100
+                && entry
+                    .id
+                    .strip_prefix("app:")
+                    .is_some_and(crate::art::valid_id)),
+        "ses profili geçersiz"
+    );
+    let (_com, devices) = devices()?;
+    // SAFETY: The listed interfaces are owned by the current apartment.
+    unsafe {
+        let groups = session_groups(&devices.GetDefaultAudioEndpoint(eRender, eConsole)?)?;
+        let mut applied = false;
+        for entry in levels {
+            if let Some((_, sessions)) = groups.get(&entry.id) {
+                for session in sessions {
+                    session.SetMasterVolume(f32::from(entry.percent) / 100.0, std::ptr::null())?;
+                    applied = true;
+                }
+            }
+        }
+        ensure!(
+            applied,
+            "bu profildeki uygulamalardan hiçbiri şu anda ses oturumu açmamış"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub(crate) struct Output {
+    id: String,
+    name: String,
+    active: bool,
+}
+
+pub(crate) fn outputs() -> Result<Vec<Output>> {
+    use windows::Win32::{
+        Foundation::PROPERTYKEY,
+        Media::Audio::DEVICE_STATE_ACTIVE,
+        System::Com::{
+            CoTaskMemFree, STGM_READ,
+            StructuredStorage::{PropVariantClear, PropVariantToStringAlloc},
+        },
+    };
+    use windows::core::GUID;
+    const NAME: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 14,
+    };
+    let (_com, devices) = devices()?;
+    // SAFETY: Buffers returned by Core Audio are converted and freed on this apartment thread.
+    unsafe {
+        let get_id = |device: &IMMDevice| -> Result<String> {
+            let raw = device.GetId()?;
+            let value = raw.to_string();
+            CoTaskMemFree(Some(raw.0.cast()));
+            Ok(value?)
+        };
+        let default = devices
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .ok()
+            .and_then(|device| get_id(&device).ok());
+        let devices = devices.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let mut result = Vec::new();
+        for index in 0..devices.GetCount()?.min(26) {
+            let device = devices.Item(index)?;
+            let id = get_id(&device)?;
+            let mut property = device.OpenPropertyStore(STGM_READ)?.GetValue(&NAME)?;
+            let raw = PropVariantToStringAlloc(&property);
+            let _ = PropVariantClear(&mut property);
+            let raw = raw?;
+            let name = raw.to_string();
+            CoTaskMemFree(Some(raw.0.cast()));
+            result.push(Output {
+                active: default.as_ref() == Some(&id),
+                id,
+                name: name?,
+            });
+        }
+        Ok(result)
+    }
+}
+
+pub(crate) fn select_output(id: &str) -> Result<()> {
+    use std::ffi::c_void;
+    use windows::{
+        Win32::System::Com::CoCreateInstance,
+        core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, PCWSTR},
+    };
+    ensure!(
+        id.len() < 768 && outputs()?.iter().any(|output| output.id == id),
+        "etkin ses çıkışı bulunamadı"
+    );
+    let (_com, _) = devices()?;
+    const CLASS: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
+    const POLICY: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+    #[repr(C)]
+    struct PolicyTable {
+        base: IUnknown_Vtbl,
+        unused: [usize; 10],
+        set_default: unsafe extern "system" fn(*mut c_void, PCWSTR, i32) -> HRESULT,
+    }
+    let wide: Vec<u16> = id.encode_utf16().chain([0]).collect();
+    // SAFETY: QueryInterface validates the policy interface UUID; the slot matches its Windows ABI.
+    unsafe {
+        let root: IUnknown = CoCreateInstance(&CLASS, None, CLSCTX_ALL)?;
+        let mut raw = std::ptr::null_mut();
+        root.query(&POLICY, &mut raw).ok()?;
+        ensure!(!raw.is_null(), "Windows ses ilkesi arayüzü yok");
+        let policy = IUnknown::from_raw(raw);
+        let table = &**(policy.as_raw() as *const *const PolicyTable);
+        (table.set_default)(policy.as_raw(), PCWSTR(wide.as_ptr()), 0).ok()?;
+        (table.set_default)(policy.as_raw(), PCWSTR(wide.as_ptr()), 1).ok()?;
+    }
+    ensure!(
+        outputs()?
+            .iter()
+            .any(|output| output.id == id && output.active),
+        "Windows ses çıkışını değiştirmedi"
+    );
+    Ok(())
+}

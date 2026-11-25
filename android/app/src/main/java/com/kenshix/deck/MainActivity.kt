@@ -20,6 +20,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -77,6 +78,7 @@ class MainActivity : Activity() {
     private var performance = false
     private var showingVideo = false
     private var showingWindows = false
+    private var showingInput = false
     private var mediaGesture = false
     private var dimmed = false
     private var standby = false
@@ -99,7 +101,7 @@ class MainActivity : Activity() {
     private val dim = Runnable {
         if (!inactive) {
             dimmed = true
-            brightness(idleBrightness)
+            brightness(effectiveIdleBrightness())
             updateAnimations()
         }
     }
@@ -263,7 +265,7 @@ class MainActivity : Activity() {
             return true
         }
         if (event.actionMasked == MotionEvent.ACTION_UP && connected() && !mixer && !obs &&
-            !performance && !showingVideo && !showingWindows && !editing && downY >= header.bottom) {
+            !performance && !showingVideo && !showingWindows && !showingInput && !editing && downY >= header.bottom) {
             val horizontal = event.x - downX
             if (kotlin.math.abs(horizontal) > dp(88) && kotlin.math.abs(event.y - downY) < dp(52)) {
                 val panels = layout().items()
@@ -296,7 +298,7 @@ class MainActivity : Activity() {
         handler.removeCallbacks(showStandby)
         dimmed = true
         standby = true
-        brightness(idleBrightness)
+        brightness(effectiveIdleBrightness())
         renderBody()
     }
 
@@ -360,6 +362,7 @@ class MainActivity : Activity() {
         top.addView(button("Video") {
             showingVideo = !showingVideo
             showingWindows = false
+            showingInput = false
             renderBody()
         }.apply { contentDescription = "Video sayfası" }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(6) })
         val menu = button("Ayarlar") { openMenu() }.apply {
@@ -392,6 +395,7 @@ class MainActivity : Activity() {
             standby -> "standby"
             showingVideo -> "video"
             showingWindows -> "windows"
+            showingInput -> "input"
             performance && connected() -> "performance"
             obs && connected() -> "obs"
             mixer && connected() -> "mixer"
@@ -429,6 +433,10 @@ class MainActivity : Activity() {
             if (body.getChildAt(0) !is WindowPage) display(WindowPage(this, link) { showingWindows = false; renderBody() })
             return
         }
+        if (showingInput) {
+            if (body.getChildAt(0) !is InputPage) display(InputPage(this, link) { showingInput = false; renderBody() })
+            return
+        }
         if (performance && connected()) {
             display(PerformanceView(this, link) { performance = false; renderBody() })
             return
@@ -460,7 +468,7 @@ class MainActivity : Activity() {
             DeckUi.touch(this, DeckUi.BLACK, 15, DeckUi.muted)
         }
 
-        if (connected()) {
+        if (connected() || rows().isNotEmpty()) {
             val layout = layout()
             val selection = layout.item(currentPanel)
             if (selection != null) {
@@ -519,6 +527,7 @@ class MainActivity : Activity() {
                     layout.colorFor(id)) {
                     if (editing) editButton(record) else execute(it, record)
                 }
+                if (!editing) attachGestures(tile, record)
                 record.optString("art").takeIf { it.isNotEmpty() }?.let { image ->
                     val picture = buttonArt.tile(this, image) { !dimmed && !inactive }
                     tile.removeViewAt(0)
@@ -556,11 +565,13 @@ class MainActivity : Activity() {
                 renderBody()
             }
             options += "Profil / sayfa seç" to ::choosePanel
+            options += "Buton ara / sabitlenenler" to ::searchButtons
             options += "Yeni profil" to ::addProfile
             if (layout().profileFor(currentPanel) != null) options += "Yeni sayfa" to ::addPage
             options += "Ad değiştir / klasör / sil" to ::managePanel
-            options += "Video" to { showingVideo = true; showingWindows = false; renderBody() }
-            options += "Windows pencereleri" to { showingWindows = true; showingVideo = false; renderBody() }
+            options += "Video" to { showingVideo = true; showingWindows = false; showingInput = false; renderBody() }
+            options += "Windows pencereleri" to { showingWindows = true; showingVideo = false; showingInput = false; renderBody() }
+            options += "Klavye ve touchpad" to { showingInput = true; showingWindows = false; showingVideo = false; renderBody() }
             options += "PC Performansı" to {
                 mixer = false
                 obs = false
@@ -570,6 +581,11 @@ class MainActivity : Activity() {
                 renderBody()
             }
         }
+        options += "Bağlantı tanılama" to {
+            DeckUi.dialog(this).setTitle("Bağlantı tanılama").setMessage(link.diagnostics())
+                .setPositiveButton("Kapat", null).showDeck()
+        }
+        options += "Saat ekranı kartları" to ::clockCards
         options += "PC ile eşleştir" to ::showPairing
         if (preferences.contains("identity")) options += "Telefon anahtarını kaldır" to {
             DeckUi.dialog(this).setTitle("Telefon anahtarını kaldır")
@@ -655,6 +671,7 @@ class MainActivity : Activity() {
         currentPanel = panel?.id
         showingVideo = false
         showingWindows = false
+        showingInput = false
         preferences.edit().putString("current_panel", currentPanel).apply {
             val profile = model.profileFor(currentPanel)
             if (profile != null) putString("profile_page_${profile.id}", currentPanel)
@@ -704,6 +721,69 @@ class MainActivity : Activity() {
             val id = model.add(name, profile.id, "page")
             savePanel(revision, model) { selectPanel(id, true) }
         }
+    }
+
+    private fun rows(): List<JSONObject> {
+        val data = deck.optJSONArray("buttons") ?: return emptyList()
+        return (0 until data.length()).mapNotNull(data::optJSONObject)
+    }
+
+    private fun searchButtons() {
+        val field = EditText(this).apply { DeckUi.field(this); hint = "Buton adı ara"; isSingleLine = true }
+        val links = DeckUi.editor(this)
+        val form = DeckUi.editor(this).apply { addView(field); addView(links) }
+        var dialog: AlertDialog? = null
+        fun refresh(query: String) {
+            links.removeAllViews()
+            val matches = rows().filter {
+                it.optString("label").contains(query, ignoreCase = true)
+            }.sortedByDescending { it.optJSONObject("behavior")?.optBoolean("pinned") == true }
+            for (row in matches.take(50)) {
+                val pinned = row.optJSONObject("behavior")?.optBoolean("pinned") == true
+                links.addView(DeckUi.action(this, (if (pinned) "★  " else "") + row.optString("label")) {
+                    dialog?.dismiss()
+                    selectPanel(layout().panelFor(row.optString("id")))
+                    if (pinned) execute(it, row)
+                })
+            }
+        }
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = refresh(value?.toString().orEmpty())
+            override fun afterTextChanged(value: android.text.Editable?) = Unit
+        })
+        refresh("")
+        dialog = DeckUi.dialog(this).setTitle("Butonlar").setView(DeckUi.scrollForm(form))
+            .setNegativeButton("Kapat", null).showDeck()
+    }
+
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun attachGestures(tile: View, record: JSONObject) {
+        val behavior = record.optJSONObject("behavior") ?: return
+        fun target(key: String) = rows().firstOrNull { it.optString("id") == behavior.optString(key) }
+        val double = target("double_tap")
+        val hold = target("long_press")
+        if (double == null && hold == null) return
+        if (hold != null) tile.setOnLongClickListener { execute(it, hold); true }
+        val detector = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(event: MotionEvent) = true
+            override fun onSingleTapUp(event: MotionEvent): Boolean {
+                if (double == null) tile.performClick()
+                return true
+            }
+            override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
+                if (double != null) tile.performClick()
+                return true
+            }
+            override fun onDoubleTap(event: MotionEvent): Boolean {
+                if (double != null) execute(tile, double)
+                return true
+            }
+            override fun onLongPress(event: MotionEvent) {
+                if (hold != null) tile.performLongClick()
+            }
+        })
+        tile.setOnTouchListener { _, event -> detector.onTouchEvent(event); true }
     }
 
     private fun choosePanel() {
@@ -815,6 +895,39 @@ class MainActivity : Activity() {
         dialog.showDeck()
     }
 
+    private fun clockCards() {
+        val order = preferences.getString("standby_cards","CPU,GPU,RAM").orEmpty().split(",").filter(String::isNotBlank).toMutableList()
+        val default = listOf("CPU","GPU","RAM","Disk")
+        val form = DeckUi.editor(this)
+        fun rebuild() {
+            form.removeAllViews()
+            (order + default.filterNot(order::contains)).forEach { name ->
+                form.addView(row().apply {
+                    addView(DeckUi.action(this@MainActivity, if (name in order) "✓ $name" else "+ $name") {
+                        if (!order.remove(name)) order.add(name)
+                        rebuild()
+                    }, LinearLayout.LayoutParams(0,dp(48),1f))
+                    if (order.indexOf(name) > 0) addView(DeckUi.action(this@MainActivity, "↑") {
+                        val position = order.indexOf(name)
+                        if (position > 0) java.util.Collections.swap(order, position, position - 1)
+                        rebuild()
+                    }.apply { contentDescription = "$name kartını öne taşı" })
+                })
+            }
+        }
+        rebuild()
+        DeckUi.dialog(this).setTitle("Saat ekranı kartları").setView(DeckUi.scrollForm(form))
+            .setNegativeButton("Vazgeç",null).setPositiveButton("Kaydet") { _, _ ->
+                preferences.edit().putString("standby_cards",order.joinToString(",")).apply()
+            }.showDeck()
+    }
+
+    private fun effectiveIdleBrightness(): Float {
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val night = preferences.getFloat("night_brightness", 0f)
+        return if (night > 0f && (hour >= 22 || hour < 7)) night else idleBrightness
+    }
+
     private fun showScreenSettings() {
         val panel = DeckUi.editor(this)
         fun number(caption: String, value: Int): EditText {
@@ -829,6 +942,7 @@ class MainActivity : Activity() {
         val normal = number("Aktif parlaklık % (0: Android ayarı)", if (activeBrightness < 0) 0 else (activeBrightness * 100).toInt())
         val idle = number("Boşta parlaklık %", (idleBrightness * 100).toInt())
         val delay = number("Kararma süresi (saniye)", idleSeconds)
+        val night = number("Gece parlaklığı % (22–07, 0 = kapalı)", (preferences.getFloat("night_brightness",0f)*100).toInt())
         val clockDelay = number("Saat ekranına geçiş (saniye)", standbySeconds)
         DeckUi.dialog(this).setTitle("Ekran").setView(DeckUi.scrollForm(panel)).setNegativeButton("Vazgeç", null)
             .setPositiveButton("Kaydet") { _, _ ->
@@ -836,9 +950,10 @@ class MainActivity : Activity() {
                 val idleValue = idle.text.toString().toIntOrNull()
                 val delayValue = delay.text.toString().toIntOrNull()
                 val clockValue = clockDelay.text.toString().toIntOrNull()
+                val nightValue = night.text.toString().toIntOrNull()
                 if (normalValue == null || normalValue !in 0..100 ||
                     idleValue == null || idleValue !in 5..35 ||
-                    delayValue == null || delayValue !in 5..299 || clockValue == null || clockValue !in (delayValue + 1)..300) {
+                    nightValue == null || nightValue !in 0..35 || delayValue == null || delayValue !in 5..299 || clockValue == null || clockValue !in (delayValue + 1)..300) {
                     notify("Parlaklık ve süre değerlerini kontrol et.")
                     return@setPositiveButton
                 }
@@ -848,7 +963,7 @@ class MainActivity : Activity() {
                 standbySeconds = clockValue
                 preferences.edit().putFloat("active_brightness", activeBrightness)
                     .putFloat("idle_brightness", idleBrightness).putInt("dim_seconds", idleSeconds)
-                    .putInt("standby_seconds", standbySeconds).apply()
+                    .putInt("standby_seconds", standbySeconds).putFloat("night_brightness", nightValue / 100f).apply()
                 wake()
             }.showDeck()
     }
@@ -895,12 +1010,33 @@ class MainActivity : Activity() {
         panel.addView(title)
         panel.addView(action)
         val routine = RoutineEditor(this, current?.optJSONObject("routine"), actions)
+        val behavior = current?.optJSONObject("behavior")
+        val alternatives = rows().filter { it.optString("id") != id }
+        val macros = alternatives.filter { it.optJSONObject("routine") != null }
+        fun target(title: String, key: String, options: List<JSONObject>): DeckChoice {
+            val saved = behavior?.optString(key)
+            val index = options.indexOfFirst { it.optString("id") == saved } + 1
+            return DeckUi.choose(this, title, listOf("Yok") + options.map { it.optString("label") }, index)
+        }
+        val shared = target("Paylaşılan makro", "shared_macro", macros)
+        val double = target("Çift dokunma", "double_tap", alternatives)
+        val hold = target("Basılı tutma", "long_press", alternatives)
+        val confirm = CheckBox(this).apply { text = "Çalıştırmadan önce onay iste"; isChecked = behavior?.optBoolean("confirm") == true }
+        val pinned = CheckBox(this).apply { text = "Sık kullanılanlara sabitle"; isChecked = behavior?.optBoolean("pinned") == true }
+        panel.addView(shared)
         panel.addView(routine)
+        panel.addView(double)
+        panel.addView(hold)
+        panel.addView(confirm)
+        panel.addView(pinned)
         fun updateRoutine(index: Int) {
-            routine.visibility = if (actions.keys.elementAt(index) == "macro") View.VISIBLE else View.GONE
+            val macro = actions.keys.elementAt(index) == "macro"
+            shared.visibility = if (macro && macros.isNotEmpty()) View.VISIBLE else View.GONE
+            routine.visibility = if (macro && shared.selectedItemPosition == 0) View.VISIBLE else View.GONE
         }
         updateRoutine(action.selectedItemPosition)
         action.onSelection = ::updateRoutine
+        shared.onSelection = { updateRoutine(action.selectedItemPosition) }
         val span = DeckUi.choose(this, "Genişlik", listOf("Standart genişlik", "Çift genişlik"), model.spanFor(id) - 1)
         val tints = linkedMapOf("Varsayılan" to null, "Siyah" to "#000000",
             "Kömür" to "#161616", "Grafit" to "#282828", "Füme" to "#383838")
@@ -938,7 +1074,15 @@ class MainActivity : Activity() {
                 val target = if (clone?.isChecked == true) UUID.randomUUID().toString() else id
                 val replacement = JSONObject().put("id", target).put("label", input)
                     .put("action", actions.keys.elementAt(action.selectedItemPosition))
-                if (replacement.getString("action") == "macro") {
+                val extra = JSONObject()
+                alternatives.getOrNull(double.selectedItemPosition - 1)?.let { extra.put("double_tap", it.optString("id")) }
+                alternatives.getOrNull(hold.selectedItemPosition - 1)?.let { extra.put("long_press", it.optString("id")) }
+                if (confirm.isChecked) extra.put("confirm", true)
+                if (pinned.isChecked) extra.put("pinned", true)
+                val macro = macros.getOrNull(shared.selectedItemPosition - 1)
+                if (replacement.getString("action") == "macro" && macro != null) {
+                    extra.put("shared_macro", macro.optString("id"))
+                } else if (replacement.getString("action") == "macro") {
                     val definition = routine.snapshot()
                     if (definition == null) {
                         displayed.setTitle("Makro adımlarını ve otomasyon alanlarını kontrol et")
@@ -946,6 +1090,7 @@ class MainActivity : Activity() {
                     }
                     replacement.put("routine", definition)
                 }
+                if (extra.length() > 0) replacement.put("behavior", extra)
                 current?.optString("art")?.takeIf { it.isNotEmpty() }?.let { replacement.put("art", it) }
                 val pixelWidth = width.text.toString().toIntOrNull()
                 val pixelHeight = height.text.toString().toIntOrNull()
@@ -1014,7 +1159,15 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun execute(view: View, record: JSONObject) {
+    private fun execute(view: View, record: JSONObject, confirmed: Boolean = false) {
+        if (!connected()) { notify("Bu buton için PC bağlantısı gerekiyor"); return }
+        if (!confirmed && record.optJSONObject("behavior")?.optBoolean("confirm") == true) {
+            DeckUi.dialog(this).setTitle(record.optString("label"))
+                .setMessage("Bu işlem çalıştırılsın mı?")
+                .setNegativeButton("Vazgeç", null)
+                .setPositiveButton("Çalıştır") { _, _ -> execute(view, record, true) }.showDeck()
+            return
+        }
         if (record.getString("action") == "obs_status") {
             obs = true
             renderBody()
@@ -1050,6 +1203,10 @@ class MainActivity : Activity() {
                     return@post
                 }
                 if (activeRoutine == operation) activeRoutine = null
+                if (record.optString("action") == "macro") {
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    if (state == "ok") notify("Makro tamamlandı")
+                }
                 val tile = view as? LinearLayout
                 val readout = tile?.getChildAt(tile.childCount - 1) as? TextView
                 val caption = readout?.text

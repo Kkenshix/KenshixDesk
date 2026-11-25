@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use windows::{
     Win32::{
         Foundation::{HLOCAL, LocalFree, POINT},
@@ -152,6 +152,122 @@ pub(crate) fn key_code(name: &str) -> Option<VIRTUAL_KEY> {
     }))
 }
 
+pub(crate) fn capture_shortcut() -> Option<Vec<String>> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    let down = |name: &str| {
+        key_code(name).is_some_and(|code| {
+            // SAFETY: Windows reads the current pressed state of the supplied virtual key.
+            unsafe { GetAsyncKeyState(i32::from(code.0)) < 0 }
+        })
+    };
+    let modifiers = ["CTRL", "ALT", "SHIFT", "WIN"];
+    let candidates = [
+        "PRTSC",
+        "ENTER",
+        "ESC",
+        "SPACE",
+        "TAB",
+        "BACKSPACE",
+        "DELETE",
+        "INSERT",
+        "PAGEUP",
+        "PAGEDOWN",
+        "END",
+        "HOME",
+        "LEFT",
+        "UP",
+        "RIGHT",
+        "DOWN",
+    ];
+    let key = candidates
+        .into_iter()
+        .map(str::to_owned)
+        .chain(
+            ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+                .chars()
+                .map(|c| c.to_string()),
+        )
+        .chain((1..=24).map(|n| format!("F{n}")))
+        .find(|name| down(name))?;
+    let mut result: Vec<_> = modifiers
+        .into_iter()
+        .filter(|key| down(key))
+        .map(str::to_owned)
+        .collect();
+    result.push(key);
+    Some(result)
+}
+
+pub(crate) fn start_menu_roots() -> Vec<std::path::PathBuf> {
+    ["APPDATA", "ProgramData"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|base| std::path::PathBuf::from(base).join("Microsoft/Windows/Start Menu/Programs"))
+        .filter_map(|base| base.canonicalize().ok())
+        .collect()
+}
+
+pub(crate) fn start_menu_apps() -> Vec<(String, std::path::PathBuf)> {
+    fn scan(folder: &std::path::Path, level: u8, out: &mut Vec<(String, std::path::PathBuf)>) {
+        if level == 0 || out.len() >= 256 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                scan(&path, level - 1, out);
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+                && let Some(label) = path.file_stem()
+            {
+                out.push((label.to_string_lossy().into_owned(), path));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for root in start_menu_roots() {
+        scan(&root, 6, &mut entries);
+    }
+    entries.sort_unstable_by_key(|(name, _)| name.to_ascii_lowercase());
+    entries.truncate(256);
+    entries
+}
+
+pub(crate) fn launch_local(path: &str) -> Result<()> {
+    let path = std::path::Path::new(path);
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+    {
+        let resolved = path.canonicalize()?;
+        ensure!(
+            start_menu_roots()
+                .iter()
+                .any(|root| resolved.starts_with(root)),
+            "Başlat menüsü kısayolu bulunamadı"
+        );
+        let explorer =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").context("Windows dizini yok")?)
+                .join("explorer.exe");
+        std::process::Command::new(explorer).arg(path).spawn()?;
+    } else {
+        let mut command = std::process::Command::new(path);
+        if let Some(folder) = path.parent() {
+            command.current_dir(folder);
+        }
+        command.spawn()?;
+    }
+    Ok(())
+}
+
 pub(crate) fn keys(keys: &[String], hold_ms: u16, active: impl Fn() -> bool) -> Result<()> {
     ensure!(active(), "işlem iptal edildi");
     let keys: Vec<_> = keys
@@ -198,6 +314,44 @@ pub(crate) fn type_text(value: &str, active: impl Fn() -> bool) -> Result<()> {
         submit(&inputs, &releases)?;
     }
     Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum InputAction {
+    Key { value: String },
+    Text { value: String },
+    Move { x: i32, y: i32 },
+    Click,
+}
+
+pub(crate) fn remote_input(action: InputAction) -> Result<()> {
+    match action {
+        InputAction::Key { value } => keys(&[value], 0, || true),
+        InputAction::Text { value } => {
+            ensure!(
+                !value.is_empty()
+                    && value.encode_utf16().count() <= 256
+                    && !value.chars().any(char::is_control),
+                "metin geçersiz"
+            );
+            type_text(&value, || true)
+        }
+        InputAction::Move { x, y } => {
+            ensure!(
+                (-240..=240).contains(&x) && (-240..=240).contains(&y),
+                "hareket geçersiz"
+            );
+            let (left, top) = cursor_position()?;
+            // SAFETY: The mouse coordinates are signed desktop coordinates supplied to Windows.
+            unsafe { SetPhysicalCursorPos(left.saturating_add(x), top.saturating_add(y)) }?;
+            Ok(())
+        }
+        InputAction::Click => {
+            let (x, y) = cursor_position()?;
+            click(x, y)
+        }
+    }
 }
 
 pub(crate) fn cursor_position() -> Result<(i32, i32)> {

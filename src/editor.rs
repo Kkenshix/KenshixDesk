@@ -95,6 +95,7 @@ pub(crate) fn open(db: Connection, adb: Option<(String, String)>) -> Result<()> 
                 selected: None,
                 selection: std::collections::HashSet::new(),
                 undo: Vec::new(),
+                macro_test: None,
                 redo: Vec::new(),
                 rename: None,
                 message: String::new(),
@@ -118,6 +119,7 @@ struct Editor {
     selected: Option<Uuid>,
     selection: std::collections::HashSet<Uuid>,
     undo: Vec<Deck>,
+    macro_test: Option<MacroTest>,
     redo: Vec<Deck>,
     rename: Option<(Uuid, String)>,
     message: String,
@@ -269,6 +271,7 @@ impl Editor {
             action: Action::Mixer,
             routine: None,
             art: None,
+            behavior: None,
         });
         self.place(
             id,
@@ -617,6 +620,13 @@ impl Editor {
             )
             .collect();
         let current_name = self.panel_name(placement.panel).to_owned();
+        let alternatives: Vec<_> = self
+            .deck
+            .buttons
+            .iter()
+            .filter(|record| record.id != id)
+            .map(|record| (record.id, record.label.clone(), record.routine.is_some()))
+            .collect();
         let button = &mut self.deck.buttons[index];
         let label = ui.add(
             egui::TextEdit::singleline(&mut button.label)
@@ -627,6 +637,9 @@ impl Editor {
         let prior = button.action;
         action_picker(ui, "button-action", &mut button.action, false);
         if prior != button.action {
+            if let Some(behavior) = &mut button.behavior {
+                behavior.shared_macro = None;
+            }
             button.routine = (button.action == Action::Macro).then(|| Routine {
                 steps: vec![],
                 continue_on_error: false,
@@ -634,8 +647,78 @@ impl Editor {
             });
             self.dirty = true;
         }
+        let mut behavior = button.behavior.clone().unwrap_or_default();
+        ui.collapsing("Dokunma ve sabitleme", |ui| {
+            self.dirty |= ui
+                .checkbox(&mut behavior.confirm, "Çalıştırmadan önce onay iste")
+                .changed();
+            self.dirty |= ui
+                .checkbox(&mut behavior.pinned, "Sık kullanılanlara sabitle")
+                .changed();
+            self.dirty |= button_reference(
+                ui,
+                "Çift dokunma",
+                &mut behavior.double_tap,
+                alternatives
+                    .iter()
+                    .map(|(id, name, _)| (*id, name.as_str())),
+            );
+            self.dirty |= button_reference(
+                ui,
+                "Basılı tutma",
+                &mut behavior.long_press,
+                alternatives
+                    .iter()
+                    .map(|(id, name, _)| (*id, name.as_str())),
+            );
+        });
+        if button.action == Action::Macro {
+            let shared = button_reference(
+                ui,
+                "Paylaşılan makro",
+                &mut behavior.shared_macro,
+                alternatives
+                    .iter()
+                    .filter(|(_, _, macro_only)| *macro_only)
+                    .map(|(id, name, _)| (*id, name.as_str())),
+            );
+            if shared {
+                button.routine = if behavior.shared_macro.is_some() {
+                    None
+                } else {
+                    Some(Routine {
+                        steps: vec![],
+                        continue_on_error: false,
+                        trigger: None,
+                    })
+                };
+                self.dirty = true;
+            }
+        }
+        if behavior.confirm
+            || behavior.pinned
+            || behavior.double_tap.is_some()
+            || behavior.long_press.is_some()
+            || behavior.shared_macro.is_some()
+        {
+            button.behavior = Some(behavior);
+        } else {
+            button.behavior = None;
+        }
         if let Some(routine) = &mut button.routine {
             self.dirty |= routine_editor(ui, routine);
+            if ui
+                .add_enabled(
+                    routine.valid() && self.macro_test.is_none(),
+                    egui::Button::new("Makroyu dene"),
+                )
+                .clicked()
+            {
+                self.macro_test = Some(MacroTest::Waiting(
+                    Instant::now() + Duration::from_secs(3),
+                    routine.clone(),
+                ));
+            }
         }
         ui.separator();
         let prior_size = (placement.width_px, placement.height_px);
@@ -924,6 +1007,30 @@ impl eframe::App for Editor {
                                 self.place(id, placement);
                             }
                         }
+                        ui.menu_button("Seçilileri başka panele taşı", |ui| {
+                            let panels: Vec<_> = self
+                                .deck
+                                .layout
+                                .iter()
+                                .flat_map(|layout| layout.panels.iter())
+                                .map(|panel| (Some(panel.id), panel.name.clone()))
+                                .collect();
+                            for (target, name) in
+                                std::iter::once((None, "Ana panel".into())).chain(panels)
+                            {
+                                if ui.button(name).clicked() {
+                                    let items: Vec<_> = self.selection.iter().copied().collect();
+                                    for id in items {
+                                        let mut placement = self.placement(id);
+                                        placement.panel = target;
+                                        self.place(id, placement);
+                                    }
+                                    self.selection.clear();
+                                    self.panel = target;
+                                    ui.close();
+                                }
+                            }
+                        });
                         if ui.button("Seçimi temizle").clicked() {
                             self.selection.clear();
                         }
@@ -938,7 +1045,51 @@ impl eframe::App for Editor {
                     });
                 });
         }
+        if let Some(MacroTest::Waiting(until, _)) = &self.macro_test
+            && Instant::now() >= *until
+            && let Some(MacroTest::Waiting(_, routine)) = self.macro_test.take()
+        {
+            let id = Uuid::new_v4();
+            match crate::routine::start(&mut self.db, id, routine) {
+                Ok(status) if status == "running" => self.macro_test = Some(MacroTest::Running(id)),
+                Ok(status) => self.message = format!("Makro başlatılamadı · {status}"),
+                Err(error) => self.message = error.to_string(),
+            }
+        }
         egui::TopBottomPanel::bottom("state").show(ctx, |ui| {
+            if let Some(test) = &self.macro_test {
+                match test {
+                    MacroTest::Waiting(until, _) => {
+                        let until = *until;
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Makro testi {} sn sonra başlayacak. Hedef pencereye geç.", until.saturating_duration_since(Instant::now()).as_secs() + 1));
+                            if ui.button("Vazgeç").clicked() { self.macro_test = None; }
+                        });
+                    }
+                    MacroTest::Running(id) => {
+                        let id = *id;
+                        let status = crate::routine::status(&self.db, id).unwrap_or_else(|_| "unknown".into());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(match status.as_str() {
+                                "ok" => "Makro testi tamamlandı",
+                                "running" => "Makro testi çalışıyor",
+                                "canceled" => "Makro testi iptal edildi",
+                                _ => "Makro testi tamamlanamadı",
+                            });
+                            if status == "running" {
+                                if ui.button("Durdur").clicked() { crate::routine::cancel(id); }
+                            } else if ui.button("Sonucu kapat").clicked() { self.macro_test = None; }
+                        });
+                        if let Ok(steps) = store::macro_history(&self.db, id) {
+                            ui.horizontal_wrapped(|ui| for (step, state, elapsed) in steps {
+                                let outcome = match state.as_str() { "ok" => "Tamam", "skipped" => "Atlandı", _ => "Hata" };
+                                ui.label(format!("Adım {step} · {outcome} · {elapsed} ms"));
+                            });
+                        }
+                    }
+                }
+            }
+
             ui.label(if self.message.is_empty() {
                 "Butonu taşı veya sağ alt köşesinden iki yönde boyutlandır. Kaydet, değişiklikleri telefona gönderir."
             } else {
@@ -964,6 +1115,11 @@ impl eframe::App for Editor {
             }
         }
     }
+}
+
+enum MacroTest {
+    Waiting(Instant, Routine),
+    Running(Uuid),
 }
 
 struct ArtPreview {
@@ -1108,6 +1264,29 @@ fn action_label(action: Action) -> &'static str {
         .map_or("", |(_, label)| *label)
 }
 
+fn button_reference<'a>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut Option<Uuid>,
+    options: impl Iterator<Item = (Uuid, &'a str)>,
+) -> bool {
+    let candidates: Vec<_> = options.collect();
+    let previous = *value;
+    let title = candidates
+        .iter()
+        .find(|(id, _)| Some(*id) == previous)
+        .map_or("Yok", |(_, name)| *name);
+    egui::ComboBox::from_label(label)
+        .selected_text(title)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, None, "Yok");
+            for (id, name) in candidates {
+                ui.selectable_value(value, Some(id), name);
+            }
+        });
+    previous != *value
+}
+
 fn action_picker(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash,
@@ -1151,6 +1330,25 @@ fn routine_editor(ui: &mut egui::Ui, routine: &mut Routine) -> bool {
             });
             match step {
                 Step::Keys { keys, hold_ms } => {
+                    let capture = ui.id().with("capture-keys");
+                    let deadline = ui.ctx().data(|data| data.get_temp::<Instant>(capture));
+                    if let Some(deadline) = deadline {
+                        if let Some(captured) = crate::windows_host::capture_shortcut() {
+                            *keys = captured;
+                            changed = true;
+                            ui.ctx().data_mut(|data| data.remove::<Instant>(capture));
+                        } else if deadline <= Instant::now() {
+                            ui.ctx().data_mut(|data| data.remove::<Instant>(capture));
+                        } else {
+                            ui.label("Klavye kısayoluna bas");
+                            ui.ctx().request_repaint_after(Duration::from_millis(12));
+                        }
+                    } else if ui.button("Tuşları yakala").clicked() {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(capture, Instant::now() + Duration::from_secs(7))
+                        });
+                        ui.ctx().request_repaint_after(Duration::from_millis(12));
+                    }
                     let mut entry = keys.join("+");
                     if ui
                         .add(
@@ -1181,6 +1379,22 @@ fn routine_editor(ui: &mut egui::Ui, routine: &mut Routine) -> bool {
                         .changed();
                 }
                 Step::Launch { executable } => {
+                    ui.menu_button("Başlat menüsünden seç", |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(270.0)
+                            .show(ui, |ui| {
+                                for (name, shortcut) in crate::windows_host::start_menu_apps() {
+                                    if ui.button(name).clicked() {
+                                        *executable = shortcut
+                                            .to_string_lossy()
+                                            .trim_start_matches(r"\\?\")
+                                            .to_owned();
+                                        changed = true;
+                                        ui.close();
+                                    }
+                                }
+                            });
+                    });
                     ui.horizontal(|ui| {
                         changed |= ui
                             .add(

@@ -9,6 +9,11 @@ pub(crate) fn open(path: &std::path::Path) -> Result<Connection> {
     db.busy_timeout(std::time::Duration::from_secs(2))?;
     db.execute_batch(
         "PRAGMA journal_mode=WAL;
+         CREATE TABLE IF NOT EXISTS macro_steps (
+             operation TEXT NOT NULL, step INTEGER NOT NULL,
+             state TEXT NOT NULL, elapsed_ms INTEGER NOT NULL, created INTEGER NOT NULL DEFAULT (unixepoch()),
+             PRIMARY KEY (operation, step)
+         );
          CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS button_art (id TEXT PRIMARY KEY, data BLOB NOT NULL);
          CREATE TABLE IF NOT EXISTS operations (
@@ -55,6 +60,35 @@ pub(crate) fn save(db: &mut Connection, mut next: Deck) -> Result<Option<Deck>> 
             next.buttons.iter().map(|button| button.id).collect();
         layout.placements.retain(|id, _| ids.contains(id));
         next.layout = Some(layout);
+    }
+    if next.buttons.iter().any(|button| button.behavior.is_some()) {
+        let ids: std::collections::HashSet<_> =
+            next.buttons.iter().map(|button| button.id).collect();
+        let sources: std::collections::HashSet<_> = next
+            .buttons
+            .iter()
+            .filter(|button| {
+                button.routine.is_some() && button.action == crate::protocol::Action::Macro
+            })
+            .map(|button| button.id)
+            .collect();
+        for button in &mut next.buttons {
+            let Some(behavior) = &mut button.behavior else {
+                continue;
+            };
+            behavior.double_tap = behavior.double_tap.filter(|id| ids.contains(id));
+            behavior.long_press = behavior.long_press.filter(|id| ids.contains(id));
+            if let Some(shared) = behavior.shared_macro.filter(|id| !sources.contains(id))
+                && let Some(routine) = old
+                    .buttons
+                    .iter()
+                    .find(|source| source.id == shared)
+                    .and_then(|source| source.routine.clone())
+            {
+                behavior.shared_macro = None;
+                button.routine = Some(routine);
+            }
+        }
     }
     ensure!(next.validate(), "geçersiz panel bilgisi");
     for id in next
@@ -105,6 +139,30 @@ pub(crate) fn claim(db: &mut Connection, id: Uuid) -> Result<Option<String>> {
     }
     transaction.commit()?;
     Ok(result)
+}
+
+pub(crate) fn macro_step(
+    db: &Connection,
+    id: Uuid,
+    step: usize,
+    state: &str,
+    elapsed_ms: u64,
+) -> Result<()> {
+    db.execute(
+        "INSERT OR REPLACE INTO macro_steps(operation,step,state,elapsed_ms) VALUES (?,?,?,?)",
+        params![id.to_string(), step, state, elapsed_ms],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn macro_history(db: &Connection, id: Uuid) -> Result<Vec<(usize, String, u64)>> {
+    let mut query = db
+        .prepare("SELECT step,state,elapsed_ms FROM macro_steps WHERE operation=? ORDER BY step")?;
+    Ok(query
+        .query_map([id.to_string()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 pub(crate) fn operation_status(db: &Connection, id: Uuid) -> Result<Option<String>> {

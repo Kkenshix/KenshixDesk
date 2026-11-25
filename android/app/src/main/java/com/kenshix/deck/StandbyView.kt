@@ -20,6 +20,7 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
     private val cpu = Gauge(context, "CPU")
     private val gpu = Gauge(context, "GPU")
     private val ram = Gauge(context, "RAM")
+    private val disk = Gauge(context, "Disk")
     private val instruments = LinearLayout(context)
     private val media = MediaControls(context, link)
     private val content = LinearLayout(context)
@@ -99,8 +100,11 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
             addView(time, LayoutParams(DeckUi.dp(context, 238), -2))
         }, LayoutParams(-2, -2))
         instruments.gravity = Gravity.CENTER
-        for (meter in listOf(cpu, gpu, ram)) {
-            instruments.addView(meter.view, LayoutParams(DeckUi.dp(context, 120), -2).apply {
+        val selected = context.getSharedPreferences("deck",Context.MODE_PRIVATE)
+            .getString("standby_cards","CPU,GPU,RAM").orEmpty().split(",").distinct()
+        val cards = mapOf("CPU" to cpu,"GPU" to gpu,"RAM" to ram,"Disk" to disk)
+        for (meter in selected.mapNotNull(cards::get)) {
+            instruments.addView(meter.view, LayoutParams(DeckUi.dp(context, if (selected.size > 3) 108 else 120), -2).apply {
                 marginStart = DeckUi.dp(context, 5)
                 marginEnd = DeckUi.dp(context, 5)
             })
@@ -122,6 +126,9 @@ internal class StandbyView(context: Context, private val link: DeckLink) : Linea
             if (total > 0) (100.0 * it.optLong("used") / total).toInt() else null
         }
         ram.render(memory)
+        val storage = report?.optJSONObject("system_disk")
+        val capacity = storage?.optLong("total") ?: 0L
+        disk.render(if (capacity > 0) (100.0 * (storage?.optLong("used") ?: 0L) / capacity).toInt() else null)
     }
 
     override fun onAttachedToWindow() {
