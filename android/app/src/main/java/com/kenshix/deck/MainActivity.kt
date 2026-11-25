@@ -151,7 +151,12 @@ class MainActivity : Activity() {
             handler.post {
                 if (!isDestroyed) {
                     queuedVideo = video?.let(BrowserOffer::parse)
-                    openQueuedVideo()
+                    val queued = queuedVideo
+                    if (queued != null && browserPlayer?.offer?.id == queued.id) {
+                        browserPlayer?.update(queued)
+                    } else {
+                        openQueuedVideo()
+                    }
                 }
             }
         })
@@ -387,8 +392,12 @@ class MainActivity : Activity() {
             preferences.getString("closed_browser_video", null) == offer.id) return
         lastBrowserVideo = offer.id
         val next = runCatching {
-            BrowserVideoPlayer(this, offer, ::closeBrowserVideo) {
-                recordBrowserVideo(offer.id, "playing")
+            BrowserVideoPlayer(this, offer, ::closeBrowserVideo) { volume ->
+                link.request(message("browser_video_volume").put("id", offer.id).put("percent", volume)) {
+                    if (it?.optBoolean("accepted") != true) handler.post {
+                        if (browserPlayer?.offer?.id == offer.id) notify("PC video sesi ayarlanamadı.")
+                    }
+                }
             }
         }.getOrElse {
             notify("Telefonun video oynatıcısı açılamadı.")
@@ -404,15 +413,11 @@ class MainActivity : Activity() {
     private fun closeBrowserVideo() {
         val player = browserPlayer ?: return
         preferences.edit().putString("closed_browser_video", player.offer.id).apply()
-        recordBrowserVideo(player.offer.id, "closed")
+        link.request(message("close_browser_video").put("id", player.offer.id)) {}
         player.release()
         browserPlayer = null
         renderBody()
         wake()
-    }
-
-    private fun recordBrowserVideo(id: String, state: String) {
-        link.request(message("browser_video_event").put("id", id).put("event", state)) {}
     }
 
     private fun updateAnimations() {

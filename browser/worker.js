@@ -5,16 +5,16 @@ let pending = null;
 let sent = '';
 let busy = false;
 let queued = false;
-let pauseTab = null;
+let activeVideo = null;
 
-chrome.storage.session.get(['sent', 'pending', 'pauseTab']).then(state => {
+chrome.storage.session.get(['sent', 'pending', 'activeVideo']).then(state => {
     sent = state.sent ?? '';
     pending = state.pending ?? null;
-    pauseTab = state.pauseTab ?? null;
+    activeVideo = state.activeVideo ?? null;
 }).finally(check);
 
 function stateChanged() {
-    return chrome.storage.session.set({sent, pending, pauseTab});
+    return chrome.storage.session.set({sent, pending, activeVideo});
 }
 
 function check() {
@@ -42,8 +42,9 @@ async function work() {
             const window = await chrome.windows.getLastFocused({populate: true});
             const foreground = window.focused && window.state !== 'minimized' ? window.tabs?.find(tab => tab.active)?.id : null;
             const entries = [...reports.entries()].filter(([, value]) => Date.now() - value.updated < 4500);
-            entries.sort((a,b) => b[1].media.started - a[1].media.started);
-            const last = entries[0];
+            const playing = entries.filter(([, value]) => value.media.playing);
+            playing.sort((a,b) => b[1].media.started - a[1].media.started);
+            const last = playing[0];
             if (last) {
                 const [tab, {media}] = last;
                 const tag = [tab, media.site, media.key, media.started].join(':');
@@ -53,29 +54,38 @@ async function work() {
                         pending = null;
                         await stateChanged();
                     }
-                } else if (tag !== sent) {
+                } else if (tag !== sent && !(activeVideo?.tab === tab && activeVideo.key === media.key &&
+                    activeVideo.site === media.site)) {
                     const draft = pending?.tag === tag ? pending : {tag, id: crypto.randomUUID()};
                     pending = draft;
-                    const result = await exchange({video: {id: draft.id, site: media.site, key: media.key, seconds: media.seconds}});
+                    const result = await exchange({video: {
+                        id: draft.id, site: media.site, key: media.key, seconds: Math.floor(media.position_ms / 1000),
+                        position_ms: media.position_ms, volume: media.volume, playing: true
+                    }});
                     if (result) {
                         sent = tag;
                         pending = null;
-                        if (media.site === 'youtube') pauseTab = {id: draft.id, tab, key: media.key, until: Date.now() + 16000};
+                        activeVideo = {id: draft.id, tab, key: media.key, site: media.site};
                         await stateChanged();
                     }
                 }
             }
-            if (pauseTab && (Date.now() >= pauseTab.until || pauseTab.tab === foreground)) {
-                pauseTab = null;
-                await stateChanged();
-            }
-            if (pauseTab) {
-                const current = pauseTab;
-                const reply = await exchange({watch: current.id});
-                if (reply?.playing) {
-                    await chrome.tabs.sendMessage(current.tab, {type: 'phone_playing', key: current.key}).catch(() => {});
-                    pauseTab = null;
-                    await stateChanged();
+            if (activeVideo) {
+                const current = activeVideo;
+                const report = reports.get(current.tab);
+                const media = report?.media;
+                if (media?.key === current.key && media.site === current.site && Date.now() - report.updated < 4500) {
+                    const reply = await exchange({watch: {
+                        id: current.id, position_ms: media.position_ms, volume: media.volume, playing: media.playing
+                    }});
+                    if (reply?.open === false) {
+                        activeVideo = null;
+                        await stateChanged();
+                    } else if (Number.isInteger(reply?.desired_volume)) {
+                        await chrome.tabs.sendMessage(current.tab, {
+                            type: 'video_volume', key: current.key, site: current.site, volume: reply.desired_volume
+                        }).catch(() => {});
+                    }
                 }
             }
         }

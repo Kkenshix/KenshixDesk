@@ -3,7 +3,6 @@ package com.kenshix.deck
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
-import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -12,9 +11,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.SeekBar
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
-internal data class BrowserOffer(val id: String, val site: String, val key: String, val seconds: Int) {
+internal data class BrowserOffer(val id: String, val site: String, val key: String, val seconds: Int,
+    val positionMs: Int, val volume: Int, val playing: Boolean,
+) {
     companion object {
         private val idPattern = Regex("[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
         private val youtube = Regex("[A-Za-z0-9_-]{11}")
@@ -31,7 +34,10 @@ internal data class BrowserOffer(val id: String, val site: String, val key: Stri
                 "kick" -> kick.matches(key)
                 else -> false
             }
-            return if (valid) BrowserOffer(id, site, key, seconds) else null
+            val position = json.optInt("position_ms", seconds * 1_000)
+            val volume = json.optInt("volume", 100)
+            if (!valid || position !in 0..86_400_000 || volume !in 0..100) return null
+            return BrowserOffer(id, site, key, seconds, position, volume, json.optBoolean("playing", true))
         }
     }
 }
@@ -41,7 +47,7 @@ internal class BrowserVideoPlayer(
     context: Context,
     val offer: BrowserOffer,
     close: () -> Unit,
-    private val playing: () -> Unit,
+    private val setVolume: (Int) -> Unit,
 ) : LinearLayout(context) {
     private val handler = Handler(Looper.getMainLooper())
     private var released = false
@@ -49,11 +55,15 @@ internal class BrowserVideoPlayer(
     private val youtube = offer.site == "youtube"
     private val origin = "https://" + context.packageName
     private val base = "$origin/"
-    private val audio = context.getSystemService(AudioManager::class.java)
-    private val stream = AudioManager.STREAM_MUSIC
+    private var source = offer
+    private var dragging = false
+    private var pendingVolume: Int? = null
+    private var volumePendingUntil = 0L
     private val summary = DeckUi.label(context, if (youtube) "YouTube" else "Kick · Canlı yayın", 13, DeckUi.muted, 550)
     private val web = WebView(context).apply {
         setBackgroundColor(DeckUi.BLACK)
+        require(WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO))
+        WebViewCompat.setAudioMuted(this, true)
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -78,7 +88,10 @@ internal class BrowserVideoPlayer(
             web.evaluateJavascript("window.deckPlayerState || ''") { value ->
                 if (!released && isAttachedToWindow) {
                     when (value) {
-                        "\"playing\"" -> playing()
+                        "\"playing\"" -> {
+                            summary.text = "YouTube · Sessiz görüntü"
+                            syncYouTube()
+                        }
                         "\"blocked\"" -> summary.text = "YouTube · Oynat düğmesine dokun"
                         "\"error\"" -> summary.text = "YouTube · Bu video gömülü oynatılamıyor"
                     }
@@ -86,6 +99,49 @@ internal class BrowserVideoPlayer(
                 }
             }
         }
+    }
+
+    private val sendVolume = Runnable {
+        pendingVolume?.let(setVolume)
+    }
+
+    private val volume = SeekBar(context).apply {
+        contentDescription = "PC video sesi"
+        max = 100
+        progress = offer.volume
+        progressTintList = ColorStateList.valueOf(DeckUi.text)
+        thumbTintList = ColorStateList.valueOf(DeckUi.text)
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    pendingVolume = value
+                    volumePendingUntil = android.os.SystemClock.elapsedRealtime() + 2600
+                    handler.removeCallbacks(sendVolume)
+                    handler.postDelayed(sendVolume, 120)
+                }
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                dragging = false
+                handler.removeCallbacks(sendVolume)
+                sendVolume.run()
+            }
+        })
+    }
+
+    fun update(offer: BrowserOffer) {
+        source = offer
+        if (!dragging && (pendingVolume == offer.volume || android.os.SystemClock.elapsedRealtime() >= volumePendingUntil)) {
+            pendingVolume = null
+            volume.progress = offer.volume
+        }
+        if (youtube) syncYouTube()
+    }
+
+    private fun syncYouTube() {
+        if (released || !loaded || !isAttachedToWindow) return
+        web.evaluateJavascript("window.deckSync?.(${source.positionMs / 1000.0}, ${source.playing})", null)
     }
 
     init {
@@ -98,21 +154,8 @@ internal class BrowserVideoPlayer(
             background = DeckUi.shape(context, DeckUi.panel, 8)
             addView(DeckUi.action(context, "Kapat") { close() }, LayoutParams(-2, dp(48)))
             addView(summary, LayoutParams(0, -2, 1f).apply { marginStart = dp(12) })
-            addView(DeckUi.label(context, "Ses", 12, DeckUi.muted, 550))
-            addView(SeekBar(context).apply {
-                contentDescription = "Telefon video sesi"
-                max = audio.getStreamMaxVolume(stream)
-                progress = audio.getStreamVolume(stream)
-                progressTintList = ColorStateList.valueOf(DeckUi.text)
-                thumbTintList = ColorStateList.valueOf(DeckUi.text)
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
-                        if (fromUser) audio.setStreamVolume(stream, value, 0)
-                    }
-                    override fun onStartTrackingTouch(bar: SeekBar) = Unit
-                    override fun onStopTrackingTouch(bar: SeekBar) = Unit
-                })
-            }, LayoutParams(dp(135), dp(48)))
+            addView(DeckUi.label(context, "PC sesi", 12, DeckUi.muted, 550))
+            addView(volume, LayoutParams(dp(135), dp(48)))
         }, LayoutParams(-1, dp(50)))
     }
 
@@ -146,20 +189,31 @@ internal class BrowserVideoPlayer(
             <div id="video"></div>
             <script>
             window.onYouTubeIframeAPIReady = function () {
-                new YT.Player('video', {
+                const player = new YT.Player('video', {
                     videoId: '${offer.key}',
                     playerVars: {autoplay: 1, start: ${offer.seconds}, playsinline: 1, origin: '$origin'},
                     events: {
-                        onStateChange: function (event) { if (event.data === 1) window.deckPlayerState = 'playing'; },
+                        onReady: function (event) { event.target.mute(); },
+                        onStateChange: function (event) {
+                            if (event.data === 1) window.deckPlayerState = 'playing';
+                        },
                         onAutoplayBlocked: function () { window.deckPlayerState = 'blocked'; },
                         onError: function () { window.deckPlayerState = 'error'; }
                     }
                 });
+                window.deckSync = function(seconds, playing) {
+                    if (typeof player.getCurrentTime !== 'function' || window.deckPlayerState !== 'playing') return;
+                    const time = player.getCurrentTime();
+                    if (typeof time === 'number' && Math.abs(seconds - time) > 1.0) player.seekTo(seconds, true);
+                    const state = player.getPlayerState();
+                    if (!playing && state === 1) player.pauseVideo();
+                    if (playing && state === 2) player.playVideo();
+                };
             };
             </script>
             <script src="https://www.youtube.com/iframe_api"></script>
         """ else """
-            <iframe title="Kick" src="https://player.kick.com/${offer.key}?autoplay=true&amp;allowfullscreen=false"
+            <iframe title="Kick" src="https://player.kick.com/${offer.key}?autoplay=true&amp;muted=true&amp;allowfullscreen=false"
                 allow="autoplay; encrypted-media" scrolling="no"></iframe>
         """
         return """

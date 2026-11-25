@@ -102,7 +102,7 @@ internal class DeckLink(
     @Volatile private var lastLatency: Long? = null
     @Volatile private var lastLoss: String? = null
     private var deckRevision = -1L
-    private var videoId: String? = null
+    private var videoSignature: String? = null
 
     fun diagnostics(): String {
         val active = connection
@@ -267,9 +267,9 @@ internal class DeckLink(
 
     private fun snapshot(current: Connection, response: JSONObject) {
         val video = response.optJSONObject("browser_video")
-        val receivedId = video?.optString("id")
-        if (receivedId != videoId) {
-            videoId = receivedId
+        val receivedVideo = video?.toString()
+        if (receivedVideo != videoSignature) {
+            videoSignature = receivedVideo
             browserVideo(video)
         }
         val deck = response.getJSONObject("deck")
@@ -290,8 +290,8 @@ internal class DeckLink(
         }
         connection?.close()
         connection = null
-        if (videoId != null) {
-            videoId = null
+        if (videoSignature != null) {
+            videoSignature = null
             browserVideo(null)
         }
         update(if (identity == null) "Eşleştirme gerekli" else "Bağlantı bekleniyor", null)

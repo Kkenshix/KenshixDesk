@@ -399,9 +399,13 @@ async fn session(mut socket: WebSocket, host: Shared) {
             match request {
                 Request::Snapshot => Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?,
                     "alert":crate::automation::alert(&host.db),"browser_video":host.video.snapshot()})),
-                Request::BrowserVideoEvent { id, event } => {
-                    host.video.phone_event(id, event);
-                    Ok(json!({"type":"browser_video_event"}))
+                Request::CloseBrowserVideo { id } => {
+                    host.video.close(id);
+                    Ok(json!({"type":"browser_video_closed"}))
+                }
+                Request::BrowserVideoVolume { id, percent } => {
+                    let accepted = host.video.volume(id, percent);
+                    Ok(json!({"type":"browser_video_volume","accepted":accepted}))
                 }
                 _ => handle(&mut host.db, request),
             }

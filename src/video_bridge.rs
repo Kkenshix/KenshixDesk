@@ -39,6 +39,19 @@ pub(crate) struct Video {
     site: Site,
     key: String,
     seconds: u32,
+    #[serde(default = "default_volume")]
+    volume: u8,
+    #[serde(default)]
+    position_ms: Option<u32>,
+    #[serde(default = "default_playing")]
+    playing: bool,
+}
+
+fn default_volume() -> u8 {
+    100
+}
+fn default_playing() -> bool {
+    true
 }
 
 impl Video {
@@ -46,6 +59,10 @@ impl Video {
         let length = self.key.len();
         !self.id.is_nil()
             && self.seconds <= 86_400
+            && self.volume <= 100
+            && self
+                .position_ms
+                .is_none_or(|position| position <= 86_400_000)
             && self
                 .key
                 .bytes()
@@ -63,15 +80,8 @@ impl Video {
 struct Pending {
     video: Video,
     until: Instant,
-    playing: bool,
+    desired_volume: Option<u8>,
     closed: bool,
-}
-
-#[derive(Clone, Copy, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PhoneEvent {
-    Playing,
-    Closed,
 }
 
 impl VideoBridge {
@@ -83,17 +93,25 @@ impl VideoBridge {
             .map(|item| item.video.clone())
     }
 
-    pub(crate) fn phone_event(&self, id: Uuid, event: PhoneEvent) {
+    pub(crate) fn close(&self, id: Uuid) {
         if let Ok(mut state) = self.0.lock()
+            && let Some(item) = state.as_mut().filter(|item| item.video.id == id)
+        {
+            item.closed = true;
+        }
+    }
+
+    pub(crate) fn volume(&self, id: Uuid, percent: u8) -> bool {
+        if percent <= 100
+            && let Ok(mut state) = self.0.lock()
             && let Some(item) = state
                 .as_mut()
-                .filter(|item| item.video.id == id && !item.closed)
+                .filter(|item| item.video.id == id && !item.closed && item.until > Instant::now())
         {
-            match event {
-                PhoneEvent::Playing => item.playing = true,
-                PhoneEvent::Closed => item.closed = true,
-            }
+            item.desired_volume = Some(percent);
+            return true;
         }
+        false
     }
 
     pub(crate) fn launch(&self, directory: &Path) -> Result<()> {
@@ -124,7 +142,16 @@ impl VideoBridge {
 #[serde(deny_unknown_fields)]
 struct BrowserRequest {
     video: Option<Video>,
-    watch: Option<Uuid>,
+    watch: Option<BrowserWatch>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserWatch {
+    id: Uuid,
+    position_ms: u32,
+    volume: u8,
+    playing: bool,
 }
 
 async fn receive(
@@ -156,15 +183,30 @@ async fn receive(
                 *state = Some(Pending {
                     video,
                     until: Instant::now() + LEASE,
-                    playing: false,
+                    desired_volume: None,
                     closed: false,
                 });
             }
             Ok(Json(json!({"accepted":true})))
         }
-        (None, Some(id)) => Ok(Json(json!({"playing":state.as_ref().is_some_and(|item| {
-            item.video.id == id && item.playing && !item.closed && item.until > Instant::now()
-        })}))),
+        (None, Some(watch)) if watch.position_ms <= 86_400_000 && watch.volume <= 100 => {
+            let Some(item) = state
+                .as_mut()
+                .filter(|item| item.video.id == watch.id && !item.closed)
+            else {
+                return Ok(Json(json!({"open":false})));
+            };
+            item.until = Instant::now() + LEASE;
+            item.video.position_ms = Some(watch.position_ms);
+            item.video.volume = watch.volume;
+            item.video.playing = watch.playing;
+            if item.desired_volume == Some(watch.volume) {
+                item.desired_volume = None;
+            }
+            Ok(Json(
+                json!({"open":true,"desired_volume":item.desired_volume}),
+            ))
+        }
         _ => Err(StatusCode::BAD_REQUEST),
     }
 }

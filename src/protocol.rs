@@ -87,9 +87,12 @@ pub(crate) enum Request {
         token: String,
     },
     Snapshot,
-    BrowserVideoEvent {
+    CloseBrowserVideo {
         id: Uuid,
-        event: crate::video_bridge::PhoneEvent,
+    },
+    BrowserVideoVolume {
+        id: Uuid,
+        percent: u8,
     },
     ObsControls,
     ChangeObs {

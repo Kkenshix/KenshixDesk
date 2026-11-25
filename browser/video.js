@@ -22,24 +22,36 @@ function sample() {
     const video = pick();
     const media = source();
     const playing = Boolean(video && media && !video.paused);
-    const identity = playing ? media.site + ':' + media.key : '';
-    if (identity !== previous && playing) started = Date.now();
+    const identity = video && media ? media.site + ':' + media.key : '';
+    if (identity !== previous) started = 0;
+    if (playing && started === 0) started = Date.now();
     previous = identity;
     chrome.runtime.sendMessage({
         type: 'sample',
-        media: playing ? {...media, seconds: Math.max(0, Math.min(86400, Math.floor(video.currentTime) || 0)), started} : null
+        media: identity ? {
+            ...media, started, playing,
+            position_ms: Math.max(0, Math.min(86400000, Math.round(video.currentTime * 1000) || 0)),
+            volume: video.muted ? 0 : Math.round(video.volume * 100)
+        } : null
     }).catch(() => {});
 }
 
 document.addEventListener('playing', sample, true);
 document.addEventListener('pause', sample, true);
 document.addEventListener('ended', sample, true);
+document.addEventListener('volumechange', sample, true);
 document.addEventListener('visibilitychange', sample);
 window.setInterval(sample, 900);
 sample();
 
 chrome.runtime.onMessage.addListener(message => {
-    if (message.type !== 'phone_playing') return;
+    if (message.type !== 'video_volume' || !Number.isInteger(message.volume) ||
+        message.volume < 0 || message.volume > 100) return;
     const media = source();
-    if (media?.site === 'youtube' && media.key === message.key) pick()?.pause();
+    const video = pick();
+    if (video && media?.site === message.site && media.key === message.key) {
+        video.volume = message.volume / 100;
+        if (message.volume > 0) video.muted = false;
+        sample();
+    }
 });
