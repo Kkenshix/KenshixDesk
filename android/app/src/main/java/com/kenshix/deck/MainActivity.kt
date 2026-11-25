@@ -414,6 +414,15 @@ class MainActivity : Activity() {
             showingInput = false
             renderBody()
         }.apply { contentDescription = "Video sayfası" }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(6) })
+        val create = button("+") {
+            if (connected()) editButton(null)
+            else if (status == "Eşleştirme gerekli") showPairing()
+            else notify("Buton eklemek için PC bağlantısı gerekli.")
+        }.apply {
+            contentDescription = "Yeni buton"
+            setPadding(0, 0, 0, 0)
+        }
+        top.addView(create, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         val menu = button("Ayarlar") { openMenu() }.apply {
             contentDescription = "Ayarlar"
             DeckUi.touch(this, surface, 16)
@@ -511,17 +520,6 @@ class MainActivity : Activity() {
         scroll.viewTreeObserver.addOnGlobalLayoutListener {
             updateAnimations()
         }
-        val create = button("+") {
-            if (connected()) editButton(null)
-            else if (status == "Eşleştirme gerekli") showPairing()
-            else notify("Buton eklemek için PC bağlantısı gerekli.")
-        }.apply {
-            contentDescription = "Yeni buton"
-            textSize = 28f
-            setTextColor(accent)
-            DeckUi.touch(this, DeckUi.BLACK, 15, DeckUi.muted)
-        }
-
         if (connected() || rows().isNotEmpty()) {
             val layout = layout()
             val selection = layout.item(currentPanel)
@@ -601,7 +599,6 @@ class MainActivity : Activity() {
                 }
                 place(tile, layout.spanFor(id), layout.widthFor(id), layout.heightFor(id))
             }
-            place(create, 1)
             spotifyFooter?.let { footer ->
                 content.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
                 content.addView(footer, LinearLayout.LayoutParams(-1, spotifyHeight).apply {
@@ -609,13 +606,10 @@ class MainActivity : Activity() {
                     marginEnd = dp(8)
                 })
             }
-        } else {
-            content.addView(create, LinearLayout.LayoutParams(dp(68), dp(68)))
-            if (status == "Bağlantı bekleniyor") {
-                content.addView(label(status, 16, muted).apply {
-                    gravity = Gravity.CENTER
-                }, LinearLayout.LayoutParams(-1, 0, 1f))
-            }
+        } else if (status == "Bağlantı bekleniyor") {
+            content.addView(label(status, 16, muted).apply {
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
         }
         scroll.addView(content)
         display(scroll)

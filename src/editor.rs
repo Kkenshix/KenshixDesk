@@ -299,6 +299,11 @@ impl Editor {
                     ui.label(egui::RichText::new("KenshixDeck").strong().size(17.0));
                     ui.separator();
                     ui.label(self.panel_name(self.panel));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("+").on_hover_text("Yeni buton").clicked() {
+                            self.create_button();
+                        }
+                    });
                 });
                 ui.add_space(19.0);
                 let children: Vec<_> = self
@@ -318,7 +323,6 @@ impl Editor {
                     .collect();
                 let mut tiles: Vec<Tile> = children.into_iter().map(Tile::Panel).collect();
                 tiles.extend(buttons.into_iter().map(Tile::Button));
-                tiles.push(Tile::Create);
                 let width = ui.available_width().max(100.0);
                 let scale = width / M22_CONTENT_WIDTH;
                 let gap = scale * TILE_GAP;
@@ -483,22 +487,6 @@ impl Editor {
                                     );
                                     self.place(button.id, placement);
                                 }
-                            }
-                        }
-                        Tile::Create => {
-                            ui.painter().rect_filled(rect, 16, Color32::BLACK);
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "+",
-                                egui::FontId::proportional(33.0),
-                                ACCENT,
-                            );
-                            if ui
-                                .interact(rect, ui.id().with("new"), Sense::click())
-                                .clicked()
-                            {
-                                self.create_button();
                             }
                         }
                     }
@@ -1186,7 +1174,6 @@ impl ArtPreview {
 enum Tile {
     Panel(Panel),
     Button(Button),
-    Create,
 }
 
 fn phone_tile(ui: &egui::Ui, rect: Rect, text: &str, action: &str, color: Color32, selected: bool) {
