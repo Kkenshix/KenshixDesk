@@ -31,6 +31,8 @@ mod tray;
 #[cfg(windows)]
 mod updater;
 #[cfg(windows)]
+mod video_bridge;
+#[cfg(windows)]
 mod window_control;
 #[cfg(windows)]
 mod windows_host;

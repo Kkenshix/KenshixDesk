@@ -81,6 +81,9 @@ class MainActivity : Activity() {
     private var obs = false
     private var performance = false
     private var showingVideo = false
+    private var browserPlayer: BrowserVideoPlayer? = null
+    private var queuedVideo: BrowserOffer? = null
+    private var lastBrowserVideo: String? = null
     private var showingWindows = false
     private var showingInput = false
     private var mediaGesture = false
@@ -144,7 +147,14 @@ class MainActivity : Activity() {
                 updateConnection()
                 if (changed || (snapshot != null && !mixer && !obs && !performance)) renderBody()
             }
-        }, { message -> handler.post { if (!isDestroyed) notify(message) } })
+        }, { message -> handler.post { if (!isDestroyed) notify(message) } }, { video ->
+            handler.post {
+                if (!isDestroyed) {
+                    queuedVideo = video?.let(BrowserOffer::parse)
+                    openQueuedVideo()
+                }
+            }
+        })
         render()
         battery = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -210,10 +220,13 @@ class MainActivity : Activity() {
             openClockOnWake = false
             enterStandby()
         } else wake()
+        renderBody()
     }
 
     override fun onStop() {
         inactive = true
+        browserPlayer?.release()
+        browserPlayer = null
         touchInProgress = false
         link.pause(true)
         handler.removeCallbacks(dim)
@@ -236,6 +249,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Android Activity back routing")
     override fun onBackPressed() {
+        if (browserPlayer != null) { closeBrowserVideo(); return }
         if (kiosk.locked()) return
         if (mixer || obs || performance || editing || showingSpotify) {
             mixer = false
@@ -250,6 +264,7 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (browserPlayer != null) return super.dispatchTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             touchInProgress = true
             downX = event.x
@@ -324,7 +339,7 @@ class MainActivity : Activity() {
     }
 
     private fun enterStandby() {
-        if (inactive || touchInProgress || openDialogs > 0 || !::link.isInitialized) return
+        if (inactive || browserPlayer != null || touchInProgress || openDialogs > 0 || !::link.isInitialized) return
         handler.removeCallbacks(dim)
         handler.removeCallbacks(showStandby)
         dimmed = true
@@ -347,7 +362,7 @@ class MainActivity : Activity() {
     private fun restartIdleTimer() {
         handler.removeCallbacks(dim)
         handler.removeCallbacks(showStandby)
-        if (inactive || standby || touchInProgress || openDialogs > 0) return
+        if (inactive || standby || browserPlayer != null || touchInProgress || openDialogs > 0) return
         handler.postDelayed(dim, idleSeconds * 1000L)
         handler.postDelayed(showStandby, standbySeconds * 1000L)
     }
@@ -361,8 +376,43 @@ class MainActivity : Activity() {
                 view.removeOnAttachStateChangeListener(this)
                 openDialogs--
                 restartIdleTimer()
+                handler.post { openQueuedVideo() }
             }
         })
+    }
+
+    private fun openQueuedVideo() {
+        val offer = queuedVideo ?: return
+        if (inactive || openDialogs > 0 || saving || lastBrowserVideo == offer.id ||
+            preferences.getString("closed_browser_video", null) == offer.id) return
+        lastBrowserVideo = offer.id
+        val next = runCatching {
+            BrowserVideoPlayer(this, offer, ::closeBrowserVideo) {
+                recordBrowserVideo(offer.id, "playing")
+            }
+        }.getOrElse {
+            notify("Telefonun video oynatıcısı açılamadı.")
+            return
+        }
+        browserPlayer?.release()
+        browserPlayer = next
+        val wasStandby = standby
+        wake()
+        if (!wasStandby) renderBody()
+    }
+
+    private fun closeBrowserVideo() {
+        val player = browserPlayer ?: return
+        preferences.edit().putString("closed_browser_video", player.offer.id).apply()
+        recordBrowserVideo(player.offer.id, "closed")
+        player.release()
+        browserPlayer = null
+        renderBody()
+        wake()
+    }
+
+    private fun recordBrowserVideo(id: String, state: String) {
+        link.request(message("browser_video_event").put("id", id).put("event", state)) {}
     }
 
     private fun updateAnimations() {
@@ -450,6 +500,7 @@ class MainActivity : Activity() {
 
         animatedTiles.clear()
         val destination = when {
+            browserPlayer != null -> "browser_video"
             standby -> "standby"
             showingSpotify -> "spotify"
             showingVideo -> "video"
@@ -478,8 +529,12 @@ class MainActivity : Activity() {
             } else if (animate) DeckUi.appear(view)
             transitionSide = 0
         }
-        header.visibility = if (standby) View.GONE else View.VISIBLE
+        header.visibility = if (standby || browserPlayer != null) View.GONE else View.VISIBLE
         headerDivider.visibility = header.visibility
+        browserPlayer?.let { player ->
+            if (body.getChildAt(0) !== player) display(player)
+            return
+        }
         if (standby) {
             if (body.getChildAt(0) !is StandbyView) display(StandbyView(this, link))
             return

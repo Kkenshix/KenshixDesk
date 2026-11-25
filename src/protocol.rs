@@ -87,6 +87,10 @@ pub(crate) enum Request {
         token: String,
     },
     Snapshot,
+    BrowserVideoEvent {
+        id: Uuid,
+        event: crate::video_bridge::PhoneEvent,
+    },
     ObsControls,
     ChangeObs {
         operation: Uuid,

@@ -88,7 +88,8 @@ private class Connection(client: OkHttpClient, address: String) {
 internal class DeckLink(
     private val credentials: Credentials,
     private val update: (String, JSONObject?) -> Unit,
-    private val report: (String) -> Unit
+    private val report: (String) -> Unit,
+    private val browserVideo: (JSONObject?) -> Unit
 ) {
     private val worker = ScheduledThreadPoolExecutor(1)
     private var identity = runCatching { credentials.load() }.getOrNull()
@@ -101,6 +102,7 @@ internal class DeckLink(
     @Volatile private var lastLatency: Long? = null
     @Volatile private var lastLoss: String? = null
     private var deckRevision = -1L
+    private var videoId: String? = null
 
     fun diagnostics(): String {
         val active = connection
@@ -264,6 +266,12 @@ internal class DeckLink(
     }
 
     private fun snapshot(current: Connection, response: JSONObject) {
+        val video = response.optJSONObject("browser_video")
+        val receivedId = video?.optString("id")
+        if (receivedId != videoId) {
+            videoId = receivedId
+            browserVideo(video)
+        }
         val deck = response.getJSONObject("deck")
         val alert = response.optString("alert").takeUnless { it.isBlank() || it == "null" }
         if (alert != null && lastAlert != null && alert != lastAlert) report(alert)
@@ -282,6 +290,10 @@ internal class DeckLink(
         }
         connection?.close()
         connection = null
+        if (videoId != null) {
+            videoId = null
+            browserVideo(null)
+        }
         update(if (identity == null) "Eşleştirme gerekli" else "Bağlantı bekleniyor", null)
     }
 }

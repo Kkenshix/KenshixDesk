@@ -41,6 +41,7 @@ struct Pairing {
 struct Host {
     db: Connection,
     pairing: Option<Pairing>,
+    video: crate::video_bridge::VideoBridge,
 }
 
 type Shared = Arc<Mutex<Host>>;
@@ -87,11 +88,13 @@ pub(crate) async fn start() -> Result<()> {
     let mut obs_port = None;
     let mut edit = None;
     let mut editor = false;
+    let mut install_video = false;
     let mut adb: Option<(String, String)> = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--pair" => pair = true,
             "--editor" => editor = true,
+            "--setup-video-browser" => install_video = true,
             "--buttons" | "--add-button" | "--remove-button" | "--set-button-media" => {
                 ensure!(
                     edit.is_none(),
@@ -140,6 +143,11 @@ pub(crate) async fn start() -> Result<()> {
         PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA bulunamadı")?)
             .join("KenshixDeck");
     std::fs::create_dir_all(&directory)?;
+    if install_video {
+        let extension = crate::video_bridge::install(&directory)?;
+        println!("{}", extension.display());
+        return Ok(());
+    }
     let mut db = store::open(&directory.join("deck.sqlite3"))?;
     if editor {
         return crate::editor::open(db, adb);
@@ -189,7 +197,11 @@ pub(crate) async fn start() -> Result<()> {
     }
     crate::metrics::start();
     crate::automation::launch(directory.join("deck.sqlite3"));
-    let shared = Arc::new(Mutex::new(Host { db, pairing }));
+    let video = crate::video_bridge::VideoBridge::default();
+    if let Err(error) = video.launch(&directory) {
+        eprintln!("{error:#}");
+    }
+    let shared = Arc::new(Mutex::new(Host { db, pairing, video }));
     if !headless {
         let (ready, started) = std::sync::mpsc::sync_channel(1);
         let code_host = Arc::clone(&shared);
@@ -365,7 +377,7 @@ async fn session(mut socket: WebSocket, host: Shared) {
     };
     let initial = with_host(Arc::clone(&host), move |host| {
         if authorized(&host.db, &digest)? {
-            Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?}))
+            Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?,"browser_video":host.video.snapshot()}))
         } else {
             Ok(json!({"type":"error","code":"unauthorized"}))
         }
@@ -384,7 +396,15 @@ async fn session(mut socket: WebSocket, host: Shared) {
             if !authorized(&host.db, &digest)? {
                 return Ok(json!({"type":"error","code":"unauthorized"}));
             }
-            handle(&mut host.db, request)
+            match request {
+                Request::Snapshot => Ok(json!({"type":"snapshot","deck":store::deck(&host.db)?,
+                    "alert":crate::automation::alert(&host.db),"browser_video":host.video.snapshot()})),
+                Request::BrowserVideoEvent { id, event } => {
+                    host.video.phone_event(id, event);
+                    Ok(json!({"type":"browser_video_event"}))
+                }
+                _ => handle(&mut host.db, request),
+            }
         })
         .await
         .unwrap_or_else(|_| json!({"type":"error","code":"host_error"}));
@@ -411,9 +431,6 @@ fn operation(
 
 fn handle(db: &mut Connection, request: Request) -> Result<Value> {
     Ok(match request {
-        Request::Snapshot => {
-            json!({"type":"snapshot","deck":store::deck(db)?,"alert":crate::automation::alert(db)})
-        }
         Request::Save { deck } => match store::save(db, deck)? {
             Some(deck) => json!({"type":"saved","deck":deck}),
             None => json!({"type":"conflict","deck":store::deck(db)?}),

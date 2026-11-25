@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "KenshixDeck Video",
+  "version": "1.0.0",
+  "description": "Arka plana geçen YouTube videolarını ve Kick canlı yayınlarını eşleştirilmiş M22’ye devreder.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {"service_worker": "worker.js"},
+  "content_scripts": [{
+    "matches": ["https://www.youtube.com/*", "https://www.kick.com/*", "https://kick.com/*"],
+    "js": ["video.js"],
+    "run_at": "document_idle"
+  }]
+}

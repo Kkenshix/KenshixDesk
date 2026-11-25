@@ -24,6 +24,12 @@ Ana panele eklenen yatay **Spotify** kartı oynatma kumandasını ve Spotify'ın
 
 Bu panelde **OBS Kaydı** F9 gönderir. OBS kullanırken kaydı başlatmak ve durdurmak için F9 kısayolunu OBS’nin kendi tuş atamalarında kullan. Discord kısayolları kullanılıyorsa masaüstü Discord'da **Tuş Atamaları** bölümünde sağırlaştırma için Page Down, mikrofon için Page Up eşlenir.
 
+## Opera’dan M22’ye video devri
+
+Windows uygulamasını bir kez `--setup-video-browser` ile çalıştır. Çıktıdaki klasörü Opera’da **Uzantılar → Geliştirici modu → Paketlenmemiş uzantıyı yükle** üzerinden seç. İlk kurulumdan sonra KenshixDeck Windows uygulamasını yeniden başlat ve açık YouTube veya Kick sekmesini bir kez yenile.
+
+Opera’da oynayan son desteklenen sekmeyi arka plana attığında video M22’de açılır. **Kapat** panele döndürür. Alt çubuktaki **Ses** telefonun medya sesini ayarlar. YouTube kaldığı saniyeden başlar ve telefonda oynatma doğrulanınca Opera’daki oynatıcı duraklatılır. Kick, kanalın canlı yayınını açar. Telefonun oynatmayı başlattığı Kick tarafından bildirilmediği için PC’deki Kick sayfası kendi durumunda kalır. YouTube’da gömülü oynatmaya kapalı videolar ve Kick arşivleri desteklenmez.
+
 ## Stable yayın kurulumu
 
 Geliştirme APK'sı yerel debug sertifikasıyla imzalıdır. Kurulu uygulama aynı Android imzasını gerektirir. İlk üretim geçişi için aynı Android imzalayıcı sürekliliğini sağla veya debug kurulumundan üretim kurulumuna ayrı cihaz hazırlığı planla.
