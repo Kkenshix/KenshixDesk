@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "KenshixDeck Video",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Opera’daki video karelerini eşleştirilmiş M22’ye yerel olarak gönderir.",
   "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1/*"],

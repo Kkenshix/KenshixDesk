@@ -117,7 +117,8 @@ async function start(message, level = 0, preferAvc = true) {
     }
     try {
         const bitrate = Math.max(3_600_000, Math.round(11_000_000 * width * height / (1920 * 1080)));
-        let config = {codec:'vp8',width,height,bitrate,framerate:60,latencyMode:'realtime',
+        const framerate = width * height <= 1280 * 720 ? 90 : 60;
+        let config = {codec:'vp8',width,height,bitrate,framerate,latencyMode:'realtime',
             hardwareAcceleration:'prefer-software'};
         if (preferAvc && width * height >= 640 * 360) {
             const avc = {...config,codec:'avc1.42E02A',avc:{format:'annexb'}};
@@ -181,6 +182,10 @@ async function start(message, level = 0, preferAvc = true) {
                 if (playback !== run) continue;
                 windowStart ??= frame.timestamp;
                 if (frame.timestamp - windowStart >= 1_100_000) {
+                    if (framerate === 60 && received * 1_000_000 > (frame.timestamp - windowStart) * 75) {
+                        void start(message,2,preferAvc);
+                        return;
+                    }
                     slowWindows = received >= 22 && published < received * .87 ? slowWindows + 1 : 0;
                     if (slowWindows >= 2) {
                         for (let next = level + 1; next < TRANSFER_HEIGHTS.length; next++) {

@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import okio.ByteString
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal const val BROWSER_FRAME_LIMIT = 512 * 1024
@@ -105,6 +106,10 @@ private class VideoDecoder(
     private var codec: MediaCodec? = null
     private var previousPresentationUs: Long? = null
     private var previousRenderNs = 0L
+    private var cadenceCount = 0
+    private var cadenceSumUs = 0L
+    private var framePeriodUs = 0L
+    private var lastRateVote = 0
     @Volatile private var closed = false
 
     fun enqueue(frame: ByteString) {
@@ -141,7 +146,7 @@ private class VideoDecoder(
                 }
                 override fun onOutputBufferAvailable(source: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                     if (codec === source) runCatching {
-                        source.releaseOutputBuffer(index, renderTime(info.presentationTimeUs))
+                        source.releaseOutputBuffer(index, renderTime(info.presentationTimeUs, output))
                     }
                 }
                 override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
@@ -151,7 +156,7 @@ private class VideoDecoder(
             }, handler)
             val format = MediaFormat.createVideoFormat(mime, width, height)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, BROWSER_FRAME_LIMIT)
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, if (width * height <= 1280 * 720) 90 else 60)
             next.configure(format, output, null, 0)
             next.start()
         }.onFailure { clearCodec(); failed() }
@@ -180,10 +185,18 @@ private class VideoDecoder(
         }
     }
 
-    private fun renderTime(presentationUs: Long): Long {
+    private fun renderTime(presentationUs: Long, output: Surface): Long {
         val now = System.nanoTime()
         val gapUs = previousPresentationUs?.let { presentationUs - it }
-        val planned = gapUs?.takeIf { it in 1..250_000 }?.let { previousRenderNs + it * 1_000 }
+        val planned = gapUs?.takeIf { it in 1..250_000 }?.let {
+            updateCadence(it, output)
+            val interval = if (framePeriodUs > 0 && abs(it - framePeriodUs) <= framePeriodUs * 2 / 5) {
+                framePeriodUs
+            } else {
+                it
+            }
+            previousRenderNs + interval * 1_000
+        }
         val renderAt = if (planned == null || planned !in now - 8_000_000..now + 42_000_000) {
             now + 22_000_000
         } else {
@@ -194,11 +207,38 @@ private class VideoDecoder(
         return renderAt
     }
 
+    private fun updateCadence(gapUs: Long, output: Surface) {
+        if (gapUs !in 8_000..60_000) {
+            cadenceCount = 0
+            cadenceSumUs = 0
+            return
+        }
+        cadenceSumUs += gapUs
+        if (++cadenceCount < 12) return
+        val average = cadenceSumUs / cadenceCount
+        cadenceCount = 0
+        cadenceSumUs = 0
+        val rate = listOf(24, 25, 30, 50, 60, 90).minBy { abs(1_000_000 / it - average) }
+        if (abs(1_000_000 / rate - average) > average / 24) {
+            framePeriodUs = 0
+            return
+        }
+        framePeriodUs = average
+        if (rate != lastRateVote) {
+            lastRateVote = rate
+            runCatching { output.setFrameRate(rate.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) }
+        }
+    }
+
     private fun clearCodec() {
         val old = codec
         codec = null
         previousPresentationUs = null
         previousRenderNs = 0L
+        cadenceCount = 0
+        cadenceSumUs = 0L
+        framePeriodUs = 0L
+        lastRateVote = 0
         inputs.clear()
         if (old != null) runCatching { old.release() }
     }
