@@ -407,8 +407,9 @@ class MainActivity : Activity() {
             }
             val columns = 5
             val gap = dp(8)
-            val width = (resources.displayMetrics.widthPixels - root.paddingLeft - root.paddingRight - dp(28)).coerceAtLeast(500)
-            val scale = resources.displayMetrics.widthPixels / 1600f
+            val screenWidth = windowManager.currentWindowMetrics.bounds.width()
+            val width = (screenWidth - root.paddingLeft - root.paddingRight - dp(28)).coerceAtLeast(180)
+            val scale = screenWidth / 1600f
             val cell = (width - columns * gap) / columns
             var gridRow = row()
             var used = width

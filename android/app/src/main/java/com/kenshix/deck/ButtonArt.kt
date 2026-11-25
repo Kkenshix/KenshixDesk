@@ -127,7 +127,7 @@ internal class MediaTile(context: Context, private val playing: () -> Boolean) :
         }.getOrNull() ?: run { showStatus("Görsel açılamadı"); return }
         release()
         addView(ImageView(context).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = ImageView.ScaleType.FIT_CENTER
             setImageDrawable(drawable)
         }, LayoutParams(-1, -1))
         animation = drawable as? Animatable

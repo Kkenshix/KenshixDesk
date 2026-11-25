@@ -442,7 +442,7 @@ impl Editor {
             ui.ctx().request_repaint_after(delay);
         }
         let source = texture.size_vec2();
-        let scale = (image.width() / source.x).max(image.height() / source.y);
+        let scale = (image.width() / source.x).min(image.height() / source.y);
         ui.painter()
             .with_clip_rect(image.intersect(ui.clip_rect()))
             .image(
