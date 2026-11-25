@@ -106,7 +106,19 @@ enum BrowserMessage {
     Volume { percent: u8 },
     Paused { value: bool },
     Unavailable,
+    Status { stage: TraceStage },
     Ping,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TraceStage {
+    Ready,
+    NoMedia,
+    Playing,
+    Paused,
+    Capturing,
+    NoFrames,
 }
 
 impl VideoBridge {
@@ -314,6 +326,32 @@ struct BrowserHello {
     key: String,
 }
 
+fn foreground_pid() -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let mut pid = 0;
+    // SAFETY: The HWND comes from Windows and the output pointer is valid for one u32.
+    let thread = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
+    (thread != 0 && pid != 0).then_some(pid)
+}
+
+fn browser_process(pid: u32) -> bool {
+    crate::audio::process_image(pid).is_some_and(|image| {
+        Path::new(&image).file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            [
+                "opera.exe",
+                "chrome.exe",
+                "msedge.exe",
+                "brave.exe",
+                "vivaldi.exe",
+                "chromium.exe",
+            ]
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        })
+    })
+}
+
 async fn browser_socket(mut socket: WebSocket, bridge: VideoBridge, key: String) {
     let hello = tokio::time::timeout(Duration::from_secs(3), socket.recv()).await;
     let Ok(Some(Ok(Message::Text(hello)))) = hello else {
@@ -329,21 +367,60 @@ async fn browser_socket(mut socket: WebSocket, bridge: VideoBridge, key: String)
     let _ = socket
         .send(Message::Text("{\"type\":\"ready\"}".into()))
         .await;
+    let trace = std::env::var_os("KDECK_VIDEO_TRACE").is_some();
+    let mut foreground = tokio::time::interval(Duration::from_millis(45));
+    foreground.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut previous_pid = None;
+    let mut previous_focus = None;
+    let mut first_frame = false;
+    if trace {
+        eprintln!("Video: browser connected");
+    }
     loop {
         tokio::select! {
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    if let Ok(event) = serde_json::from_str(&text) { bridge.update(publisher, event); }
+                    if let Ok(event) = serde_json::from_str(&text) {
+                        match event {
+                            BrowserMessage::Status { stage } => {
+                                if trace { eprintln!("Video: browser status {stage:?}"); }
+                            }
+                            event => {
+                                if matches!(event, BrowserMessage::Begin { .. }) {
+                                    first_frame = false;
+                                    if trace { eprintln!("Video: began"); }
+                                }
+                                if matches!(event, BrowserMessage::End) && trace { eprintln!("Video: ended"); }
+                                bridge.update(publisher, event);
+                            }
+                        }
+                    }
                 }
                 Some(Ok(Message::Binary(frame))) if frame.len() > 9 && frame[0] <= 1 => {
                     if let Ok(state) = bridge.0.state.lock()
                         && state.as_ref().is_some_and(|live| live.publisher == publisher)
                     {
+                        if !first_frame {
+                            first_frame = true;
+                            if trace { eprintln!("Video: first frame"); }
+                        }
                         let _ = bridge.0.phone.send(ScreenEvent::Frame(frame));
                     }
                 }
                 Some(Ok(Message::Pong(_) | Message::Ping(_))) => {}
                 _ => break,
+            },
+            _ = foreground.tick() => {
+                let Some(pid) = foreground_pid() else { continue };
+                if Some(pid) == previous_pid { continue; }
+                previous_pid = Some(pid);
+                let focused = browser_process(pid);
+                if Some(focused) == previous_focus { continue; }
+                previous_focus = Some(focused);
+                if trace { eprintln!("Video: Windows browser focused = {focused}"); }
+                let message = Message::Text(json!({"type":"foreground","value":focused}).to_string().into());
+                if !matches!(tokio::time::timeout(Duration::from_millis(450), socket.send(message)).await,
+                    Ok(Ok(()))) { break; }
             },
             command = commands.recv() => match command {
                 Ok((id, command)) if id == publisher => {

@@ -6,6 +6,9 @@ let ready = false;
 let current;
 let dismissed;
 let focused;
+let nativeFocused;
+let lastActive;
+let status;
 let serial = 0;
 
 function connect() {
@@ -17,7 +20,18 @@ function connect() {
         if (socket !== candidate) return;
         let reply;
         try { reply = JSON.parse(event.data); } catch { return; }
-        if (reply.type === 'ready') { ready = true; refresh(); }
+        if (reply.type === 'ready') {
+            ready = true;
+            status = undefined;
+            trace('ready');
+            void refresh();
+        }
+        if (reply.type === 'foreground' && typeof reply.value === 'boolean') {
+            nativeFocused = reply.value;
+            if (nativeFocused && lastActive !== undefined) focused = lastActive;
+            choose();
+            if (nativeFocused) void refresh();
+        }
         if (reply.type === 'volume' && current) {
             current.port.postMessage({...reply,id:current.id,key:current.key});
         }
@@ -29,12 +43,20 @@ function connect() {
     candidate.onclose = () => {
         if (socket !== candidate) return;
         ready = false;
+        nativeFocused = undefined;
         stop();
     };
 }
 
 function transmit(message) {
     if (ready && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+function trace(stage) {
+    if (stage !== status) {
+        status = stage;
+        transmit({type:'status',stage});
+    }
 }
 
 function stop() {
@@ -46,20 +68,26 @@ function stop() {
 }
 
 function choose() {
-    if (!ready || focused === undefined) return;
+    if (!ready) return;
+    const foreground = nativeFocused === false ? null : focused;
+    if (foreground === undefined) return;
     if (current) {
         const data = tabs.get(current.tab);
-        if (current.tab === focused || data?.media?.key !== current.key || data.port !== current.port) {
+        if (current.tab === foreground || data?.media?.key !== current.key || data.port !== current.port) {
             stop();
         }
     }
-    if (focused !== null && dismissed?.startsWith(String(focused) + ':')) dismissed = undefined;
+    if (foreground !== null && dismissed?.startsWith(String(foreground) + ':')) dismissed = undefined;
     const newest = [...tabs.entries()]
         .filter(([,entry]) => entry.media?.playing)
         .sort((a,b) => b[1].media.started - a[1].media.started)[0];
-    if (!newest) return;
+    if (!newest) {
+        trace(current ? 'paused' : 'no_media');
+        return;
+    }
     const [tab, entry] = newest;
-    if (tab === focused || dismissed === tab + ':' + entry.media.key ||
+    trace(current?.begun ? 'capturing' : 'playing');
+    if (tab === foreground || dismissed === tab + ':' + entry.media.key ||
         (current?.tab === tab && current.key === entry.media.key)) return;
     stop();
     current = {tab, port:entry.port, key:entry.media.key, id:crypto.randomUUID(), begun:false};
@@ -68,7 +96,7 @@ function choose() {
 
 async function refresh(windowId) {
     const revision = ++serial;
-    if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    if (windowId === chrome.windows.WINDOW_ID_NONE && nativeFocused !== true) {
         focused = null;
         choose();
         return;
@@ -76,7 +104,12 @@ async function refresh(windowId) {
     try {
         const window = await chrome.windows.getLastFocused({populate:true});
         if (revision !== serial) return;
-        focused = window.focused && window.state !== 'minimized' ? window.tabs?.find(tab => tab.active)?.id ?? null : null;
+        const active = window.tabs?.find(tab => tab.active)?.id ??
+            (await chrome.tabs.query({windowId:window.id,active:true}))[0]?.id;
+        if (revision !== serial) return;
+        if (active !== undefined) lastActive = active;
+        focused = (nativeFocused === true || window.focused) && window.state !== 'minimized'
+            ? lastActive ?? null : null;
         choose();
     } catch {}
 }
@@ -100,7 +133,8 @@ function sendFrame(message) {
 
 chrome.runtime.onConnect.addListener(port => {
     const tab = port.sender?.tab;
-    if (port.name !== 'video' || !tab || tab.incognito || port.sender.frameId !== 0) return;
+    if (port.name !== 'video' || !Number.isInteger(tab?.id) || tab.incognito ||
+        (port.sender.frameId !== undefined && port.sender.frameId !== 0)) return;
     const id = tab.id;
     tabs.set(id,{port,media:null});
     connect();
@@ -120,6 +154,7 @@ chrome.runtime.onConnect.addListener(port => {
         } else if (current?.port === port && current.id === message.id) {
             if (message.type === 'begin' && entry.media) {
                 current.begun = true;
+                trace('capturing');
                 current.needsKey = true;
                 transmit({type:'begin',video:{id:current.id,site:entry.media.site,volume:entry.media.volume,
                     width:message.width,height:message.height}});
@@ -128,6 +163,7 @@ chrome.runtime.onConnect.addListener(port => {
             } else if (message.type === 'unavailable') {
                 dismissed = current.tab + ':' + current.key;
                 stop();
+                trace('no_frames');
                 transmit({type:'unavailable'});
             }
         }
@@ -144,7 +180,10 @@ chrome.tabs.onActivated.addListener(async info => {
     try {
         const window = await chrome.windows.get(info.windowId);
         if (revision !== serial) return;
-        if (window.focused) focused = info.tabId;
+        if (window.focused || nativeFocused === true) {
+            lastActive = info.tabId;
+            focused = info.tabId;
+        }
         choose();
     } catch {}
 });

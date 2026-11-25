@@ -48,6 +48,7 @@ function stop() {
     const old = playback;
     playback = null;
     if (!old) return;
+    clearTimeout(old.noFrames);
     old.reader?.cancel().catch(() => {});
     if (old.encoder?.state !== 'closed') old.encoder?.close();
     old.track?.stop();
@@ -83,6 +84,7 @@ async function start(message) {
         const encoder = new VideoEncoder({
             output(chunk) {
                 if (playback !== run || chunk.byteLength > 256 * 1024 - 9) return;
+                clearTimeout(run.noFrames);
                 const packet = new Uint8Array(9 + chunk.byteLength);
                 packet[0] = chunk.type === 'key' ? 1 : 0;
                 new DataView(packet.buffer).setBigUint64(1,BigInt(Math.max(0,chunk.timestamp)));
@@ -102,6 +104,12 @@ async function start(message) {
         const reader = new MediaStreamTrackProcessor({track,maxBufferSize:2}).readable.getReader();
         run.reader = reader;
         port.postMessage({type:'begin',id:run.id,width,height});
+        run.noFrames = setTimeout(() => {
+            if (playback === run && !selected.video.paused) {
+                port.postMessage({type:'unavailable',id:run.id});
+                stop();
+            }
+        },2400);
         let latest = -Infinity;
         let keyAt = -Infinity;
         while (playback === run) {

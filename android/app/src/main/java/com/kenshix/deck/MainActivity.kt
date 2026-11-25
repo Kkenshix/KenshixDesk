@@ -480,9 +480,13 @@ class MainActivity : Activity() {
         }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         if (kiosk.isOwner()) {
-            top.addView(button("⏻") { sleepScreen() }.apply {
+            top.addView(android.widget.ImageButton(this).apply {
                 contentDescription = "Ekranı kapat"
-                setPadding(0, 0, 0, 0)
+                setImageResource(R.drawable.ic_power)
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                DeckUi.touch(this, surface, 12, line)
+                setOnClickListener { sleepScreen() }
             }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(6) })
         }
         clockView = label("", 12, muted).apply {
