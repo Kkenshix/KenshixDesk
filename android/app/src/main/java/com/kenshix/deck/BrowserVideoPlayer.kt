@@ -1,25 +1,20 @@
 package com.kenshix.deck
 
 import android.content.Context
-import android.content.res.ColorStateList
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
-import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.SeekBar
 import okio.ByteString
 import org.json.JSONObject
 import java.util.UUID
 
 internal data class BrowserOffer(
-    val id: String, val site: String, val width: Int, val height: Int, val volume: Int,
+    val id: String, val width: Int, val height: Int,
 ) {
     companion object {
         fun parse(json: JSONObject): BrowserOffer? {
@@ -31,7 +26,7 @@ internal data class BrowserOffer(
             val volume = json.optInt("volume", -1)
             if (id != canonical || site !in setOf("youtube", "kick", "opera") || width !in 2..960 ||
                 height !in 2..540 || width % 2 != 0 || height % 2 != 0 || volume !in 0..100) return null
-            return BrowserOffer(id, site, width, height, volume)
+            return BrowserOffer(id, width, height)
         }
     }
 }
@@ -39,99 +34,29 @@ internal data class BrowserOffer(
 internal class BrowserVideoPlayer(
     context: Context,
     val offer: BrowserOffer,
-    close: () -> Unit,
-    private val setVolume: (Int) -> Unit,
-) : LinearLayout(context) {
+    failed: () -> Unit,
+) : SurfaceView(context) {
     private val handler = Handler(Looper.getMainLooper())
-    private val service = when (offer.site) {
-        "youtube" -> "YouTube"
-        "kick" -> "Kick"
-        else -> "Opera"
-    }
-    private val summary = DeckUi.label(context, service, 13, DeckUi.muted, 550)
-    private var dragging = false
     private val decoder = VideoDecoder(offer.width, offer.height) {
-        handler.post { summary.text = "Görüntü çözülemedi" }
-    }
-
-    private val sendVolume: Runnable = Runnable { setVolume(volume.progress) }
-    private val volume: SeekBar = SeekBar(context).apply {
-        contentDescription = "PC video sesi"
-        max = 100
-        progress = offer.volume
-        progressTintList = ColorStateList.valueOf(DeckUi.text)
-        thumbTintList = ColorStateList.valueOf(DeckUi.text)
-        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    handler.removeCallbacks(sendVolume)
-                    handler.postDelayed(sendVolume, 90)
-                }
-            }
-            override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
-            override fun onStopTrackingTouch(bar: SeekBar) {
-                dragging = false
-                handler.removeCallbacks(sendVolume)
-                sendVolume.run()
-            }
-        })
+        handler.post { failed() }
     }
 
     init {
-        orientation = VERTICAL
-        setBackgroundColor(DeckUi.BLACK)
-        addView(object : FrameLayout(context) {
-            private val video = SurfaceView(context).also { child ->
-                addView(child)
-                child.holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) { decoder.surface(holder.surface) }
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-                    override fun surfaceDestroyed(holder: SurfaceHolder) { decoder.surface(null) }
-                })
-            }
-
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val width = MeasureSpec.getSize(widthMeasureSpec)
-                val height = MeasureSpec.getSize(heightMeasureSpec)
-                val ratio = minOf(width.toDouble() / offer.width, height.toDouble() / offer.height)
-                video.measure(MeasureSpec.makeMeasureSpec((offer.width * ratio).toInt(), MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec((offer.height * ratio).toInt(), MeasureSpec.EXACTLY))
-                setMeasuredDimension(width, height)
-            }
-
-            override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-                val x = (right - left - video.measuredWidth) / 2
-                val y = (bottom - top - video.measuredHeight) / 2
-                video.layout(x, y, x + video.measuredWidth, y + video.measuredHeight)
-            }
-        }, LayoutParams(-1, 0, 1f))
-        addView(LinearLayout(context).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), 0, dp(12), 0)
-            background = DeckUi.shape(context, DeckUi.panel, 8)
-            addView(DeckUi.action(context, "Kapat") { close() }, LayoutParams(-2, dp(48)))
-            addView(summary, LayoutParams(0, -2, 1f).apply { marginStart = dp(12) })
-            addView(DeckUi.label(context, "PC sesi", 12, DeckUi.muted, 550))
-            addView(volume, LayoutParams(dp(135), dp(48)))
-        }, LayoutParams(-1, dp(50)))
+        contentDescription = "Opera videosu"
+        holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) { decoder.surface(holder.surface) }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+            override fun surfaceDestroyed(holder: SurfaceHolder) { decoder.surface(null) }
+        })
     }
 
     fun accept(frame: ByteString) = decoder.enqueue(frame)
-
-    fun updateVolume(percent: Int) {
-        if (!dragging && percent in 0..100) volume.progress = percent
-    }
-
-    fun updatePaused(paused: Boolean) {
-        summary.text = if (paused) "$service · PC’de duraklatıldı" else service
-    }
 
     fun release() {
         handler.removeCallbacksAndMessages(null)
         decoder.close()
     }
 
-    private fun dp(value: Int) = DeckUi.dp(context, value)
 }
 
 private class VideoDecoder(
@@ -186,12 +111,15 @@ private class VideoDecoder(
                 override fun onError(source: MediaCodec, error: MediaCodec.CodecException) {
                     if (codec === source) { clearCodec(); failed() }
                 }
-                override fun onOutputFormatChanged(source: MediaCodec, format: MediaFormat) = Unit
+                override fun onOutputFormatChanged(source: MediaCodec, format: MediaFormat) {
+                    if (codec === source) source.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
+                }
             }, handler)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, width, height)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             next.configure(format, output, null, 0)
+            next.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
             next.start()
         }.onFailure { clearCodec(); failed() }
     }

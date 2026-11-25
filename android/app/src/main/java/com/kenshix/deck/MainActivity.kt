@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import kotlin.math.roundToInt
 import android.graphics.Color
+import android.graphics.Insets
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
@@ -19,6 +20,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
@@ -60,6 +62,7 @@ class MainActivity : Activity() {
     private val kiosk by lazy { Kiosk(this) }
     private lateinit var root: LinearLayout
     private lateinit var stage: FrameLayout
+    private var contentInsets = Insets.NONE
     private var transitionOverlay: View? = null
     private var transitionAnimator: ValueAnimator? = null
     private lateinit var statusView: TextView
@@ -409,8 +412,6 @@ class MainActivity : Activity() {
                 if (lost || queuedVideo?.id == id) queuedVideo = null
                 if (lost || browserPlayer?.offer?.id == id) finishBrowserVideo()
             }
-            "volume" -> browserPlayer?.takeIf { it.offer.id == id }?.updateVolume(event.optInt("percent"))
-            "paused" -> browserPlayer?.takeIf { it.offer.id == id }?.updatePaused(event.optBoolean("value"))
             "unavailable" -> notify("Opera bu videonun görüntüsünü paylaşamadı.")
         }
     }
@@ -420,11 +421,10 @@ class MainActivity : Activity() {
         if (inactive || openDialogs > 0 || saving || browserPlayer?.offer?.id == offer.id ||
             preferences.getString("closed_browser_video", null) == offer.id) return
         browserPlayer?.release()
-        browserPlayer = BrowserVideoPlayer(this, offer, ::closeBrowserVideo) { volume ->
-            link.request(message("browser_video_volume").put("id", offer.id).put("percent", volume)) {
-                if (it?.optBoolean("accepted") != true) handler.post {
-                    if (browserPlayer?.offer?.id == offer.id) notify("PC video sesi ayarlanamadı.")
-                }
+        browserPlayer = BrowserVideoPlayer(this, offer) {
+            if (browserPlayer?.offer?.id == offer.id) {
+                closeBrowserVideo()
+                notify("Görüntü çözülemedi.")
             }
         }
         val wasStandby = standby
@@ -526,14 +526,22 @@ class MainActivity : Activity() {
         headerDivider = View(this).apply { setBackgroundColor(line) }
         root.addView(headerDivider, LinearLayout.LayoutParams(-1, dp(1)))
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.setOnApplyWindowInsetsListener { view, insets ->
-            val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            contentInsets = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            applyContentInsets()
             insets
         }
         stage = FrameLayout(this).apply { addView(root, FrameLayout.LayoutParams(-1, -1)) }
         setContentView(stage)
         renderBody()
+    }
+
+    private fun applyContentInsets() {
+        val inset = if (browserPlayer == null) contentInsets else Insets.NONE
+        root.setPadding(inset.left, inset.top, inset.right, inset.bottom)
     }
 
     private fun showPageTransition() {
@@ -582,8 +590,7 @@ class MainActivity : Activity() {
     private fun layout() = PanelLayout(deck.optJSONObject("layout"))
 
     private fun renderBody() {
-
-
+        applyContentInsets()
         animatedTiles.clear()
         val destination = when {
             browserPlayer != null -> "browser_video"
